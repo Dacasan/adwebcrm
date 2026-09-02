@@ -1,0 +1,16 @@
+.git
+.github
+.next
+node_modules
+docs
+supabase
+*.md
+!README.md
+.env*
+!.env.local.example
+Dockerfile
+docker-compose*.yml
+.dockerignore
+.vscode
+.idea
+coverage

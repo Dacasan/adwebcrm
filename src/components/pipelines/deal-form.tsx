@@ -1,0 +1,625 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
+import { CURRENCIES } from "@/lib/currency";
+import type {
+  Contact,
+  Conversation,
+  Deal,
+  DealStatus,
+  PipelineStage,
+  Profile,
+} from "@/types";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { StageTransitionModal } from "@/components/pipelines/stage-transition-modal";
+import { transitionDeal } from "@/components/pipelines/transition-deal";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Check,
+  X,
+  Trash2,
+  MessageSquare,
+  DollarSign,
+  Loader2,
+} from "lucide-react";
+import { toast } from "sonner";
+import { useTranslations } from "next-intl";
+
+interface DealFormProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  deal?: Deal | null;
+  pipelineId: string;
+  stages: PipelineStage[];
+  defaultStageId?: string;
+  onSaved: () => void;
+}
+
+/** Cuerpo de `POST /api/deals`: los mismos campos que componía el insert. */
+interface CreateDealBody {
+  title: string;
+  value: number;
+  currency: string;
+  contact_id: string;
+  pipeline_id: string;
+  stage_id: string;
+  assigned_to: string | null;
+  notes: string | null;
+  expected_close_date: string | null;
+}
+
+/**
+ * Cliente de `POST /api/deals` — la vía por la que una persona crea un trato.
+ * Devuelve el trato creado, o `null` si la petición no llegó a crearlo (red
+ * caída, o 4xx/5xx de la ruta: auth, tenencia o validación). El llamante trata
+ * ese `null` igual que trataba el `error` de PostgREST del insert anterior:
+ * toast genérico de fallo.
+ *
+ * Vive aquí y no en un módulo aparte —al contrario que `transitionDeal`—
+ * porque la transición tiene tres llamantes (kanban, cambio de etapa del
+ * formulario y botones ganado/perdido) y el alta tiene exactamente uno. Si
+ * aparece un segundo, esto se muda a `create-deal.ts` con el mismo patrón.
+ *
+ * `account_id`, `user_id` y `status` NO viajan en el cuerpo: los fija la ruta
+ * desde la sesión del servidor. Mandarlos desde el navegador sería dejar que
+ * el cliente eligiera en qué cuenta escribe y con qué estado nace el trato.
+ */
+async function createDeal(body: CreateDealBody): Promise<{ id: string } | null> {
+  try {
+    const res = await fetch("/api/deals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.error("Failed to create deal:", res.status);
+      return null;
+    }
+    const json = (await res.json()) as { deal?: { id: string } };
+    return json.deal ?? null;
+  } catch (err) {
+    console.error("Failed to create deal:", err);
+    return null;
+  }
+}
+
+export function DealForm({
+  open,
+  onOpenChange,
+  deal,
+  pipelineId,
+  stages,
+  defaultStageId,
+  onSaved,
+}: DealFormProps) {
+  const t = useTranslations("Pipelines.form");
+  const supabase = createClient();
+  const { accountId, defaultCurrency } = useAuth();
+
+  const [title, setTitle] = useState("");
+  const [value, setValue] = useState("");
+  const [currency, setCurrency] = useState(defaultCurrency);
+  const [contactId, setContactId] = useState("");
+  const [stageId, setStageId] = useState("");
+  const [assignedTo, setAssignedTo] = useState("");
+  const [expectedCloseDate, setExpectedCloseDate] = useState("");
+  const [notes, setNotes] = useState("");
+
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [linkedConversation, setLinkedConversation] =
+    useState<Conversation | null>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [statusAction, setStatusAction] = useState<DealStatus | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Stage transition checklist modal (067): cuando el usuario cambia de etapa
+  // en el formulario y la etapa destino tiene checklist, se pausa el guardado
+  // hasta que confirme. El checklist NUNCA bloquea.
+  const [pendingStageChange, setPendingStageChange] = useState<string | null>(
+    null,
+  );
+  const [transitionModalOpen, setTransitionModalOpen] = useState(false);
+
+  // Reset the form fields every time the sheet opens or its input
+  // props change. This is a legitimate prop-driven sync; the rule is
+  // over-cautious here, hence the block-level disable.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!open) return;
+    setConfirmDelete(false);
+    if (deal) {
+      setTitle(deal.title);
+      setValue(String(deal.value ?? ""));
+      setCurrency(deal.currency || defaultCurrency);
+      // contact_id is nullable when the contact has been deleted
+      // (migration 004: ON DELETE SET NULL). "" means "no selection".
+      setContactId(deal.contact_id ?? "");
+      setStageId(deal.stage_id);
+      setAssignedTo(deal.assigned_to ?? "");
+      setExpectedCloseDate(deal.expected_close_date ?? "");
+      setNotes(deal.notes ?? "");
+    } else {
+      setTitle("");
+      setValue("");
+      setCurrency(defaultCurrency);
+      setContactId("");
+      setStageId(defaultStageId || stages[0]?.id || "");
+      setAssignedTo("");
+      setExpectedCloseDate("");
+      setNotes("");
+    }
+  }, [open, deal, defaultStageId, stages, defaultCurrency]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Load supporting data once the sheet is open
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      const [c, p] = await Promise.all([
+        supabase.from("contacts").select("*").order("name"),
+        supabase.from("profiles").select("*").order("full_name"),
+      ]);
+      if (cancelled) return;
+      setContacts((c.data ?? []) as Contact[]);
+      setProfiles((p.data ?? []) as Profile[]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, supabase]);
+
+  // Fetch linked conversation for the selected contact (newest open one).
+  // Clearing on no-selection is sync with prop state; the populated
+  // case runs setLinkedConversation inside the async fetch callback.
+  useEffect(() => {
+    if (!open || !contactId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLinkedConversation(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("conversations")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("last_message_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cancelled) return;
+      setLinkedConversation((data as Conversation | null) ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, contactId, supabase]);
+
+  async function performSave() {
+    if (!title.trim() || !contactId || !stageId) {
+      toast.error(t("toastRequired"));
+      return;
+    }
+    setSaving(true);
+
+    const payload = {
+      title: title.trim(),
+      value: parseFloat(value) || 0,
+      currency,
+      contact_id: contactId,
+      pipeline_id: pipelineId,
+      assigned_to: assignedTo || null,
+      notes: notes.trim() || null,
+      expected_close_date: expectedCloseDate || null,
+    };
+
+    if (deal) {
+      // Cambio de stage = transición atómica → transition_deal primero
+      // (DAD §7.1: optimistic locking), ahora a través de la ruta de servidor
+      // para que despache las automatizaciones. Los demás campos son datos
+      // planos y siguen por update directo. stage_id se excluye del update
+      // directo a propósito: transition_deal es la ÚNICA vía que escribe el
+      // stage (emite state_changed; un update directo no deja huella y
+      // rompería la derivación de time-in-stage).
+      if (stageId !== deal.stage_id) {
+        const result = await transitionDeal(deal.id, {
+          to_stage_id: stageId,
+          expected_version: deal.version ?? null,
+        });
+        if (!result?.ok) {
+          toast.error(
+            result?.code === "VERSION_CONFLICT"
+              ? t("toastStatusConflict")
+              : t("toastFailedSave"),
+          );
+          setSaving(false);
+          return;
+        }
+      }
+      const { error } = await supabase
+        .from("deals")
+        .update(payload)
+        .eq("id", deal.id);
+      if (error) {
+        toast.error(t("toastFailedSave"));
+        setSaving(false);
+        return;
+      }
+    } else {
+      // Alta a través de POST /api/deals, no con un insert desde el
+      // navegador. Mismo motivo que la transición: el insert era correcto
+      // —la RLS lo cubre— pero ocurría entero en el cliente, así que el
+      // servidor no se enteraba del alta y no había dónde despachar el
+      // trigger `deal_created` (el motor de automatizaciones vive en Node).
+      // La ruta es ahora el único camino por el que una persona crea un
+      // trato, y por tanto el único despachador del disparador.
+      //
+      // Estas dos comprobaciones ya no alimentan el insert —`user_id` y
+      // `account_id` los pone la ruta desde la sesión del servidor, nunca
+      // desde el body— pero sobreviven como pre-vuelo: dan el mensaje
+      // preciso («no has iniciado sesión» / «cuenta no vinculada») en vez
+      // del genérico de fallo que devolvería el 401/403 de la ruta.
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user) {
+        toast.error(t("toastNotSignedIn"));
+        setSaving(false);
+        return;
+      }
+      if (!accountId) {
+        toast.error(t("toastNotLinked"));
+        setSaving(false);
+        return;
+      }
+      const created = await createDeal({ ...payload, stage_id: stageId });
+      if (!created) {
+        toast.error(t("toastFailedCreate"));
+        setSaving(false);
+        return;
+      }
+    }
+
+    setSaving(false);
+    toast.success(deal ? t("toastUpdated") : t("toastCreated"));
+    onOpenChange(false);
+    onSaved();
+  }
+
+  async function handleSave() {
+    if (!title.trim() || !contactId || !stageId) {
+      toast.error(t("toastRequired"));
+      return;
+    }
+    // Cambio de etapa con checklist en el destino → pausar con el modal de
+    // confirmación (067). El checklist NUNCA bloquea; el agente confirma y
+    // sigue. Etapa sin checklist o mismo stage → guardado directo.
+    if (deal && stageId !== deal.stage_id) {
+      const toStage = stages.find((s) => s.id === stageId);
+      if (toStage && toStage.checklist.length > 0) {
+        setPendingStageChange(stageId);
+        setTransitionModalOpen(true);
+        return;
+      }
+    }
+    await performSave();
+  }
+
+  async function handleStatusChange(status: DealStatus) {
+    if (!deal) return;
+    setStatusAction(status);
+    // transition_deal es la ÚNICA vía de cambio de estado (DAD §7.1):
+    // fija won_at/lost_at, prioridad derivada, y emite state_changed.
+    // El update directo de status está prohibido. Mismo stage destino: aquí
+    // solo cambia el status, pero la vía sigue siendo la ruta de servidor.
+    const result = await transitionDeal(deal.id, {
+      to_stage_id: deal.stage_id,
+      new_status: status,
+      expected_version: deal.version ?? null,
+    });
+    setStatusAction(null);
+    if (!result?.ok) {
+      toast.error(
+        result?.code === "VERSION_CONFLICT"
+          ? t("toastStatusConflict")
+          : t("toastFailedStatus"),
+      );
+      onSaved();
+      return;
+    }
+    toast.success(
+      status === "won" ? t("toastMarkedWon") : status === "lost" ? t("toastMarkedLost") : t("toastReopened"),
+    );
+    onOpenChange(false);
+    onSaved();
+  }
+
+  async function handleDelete() {
+    if (!deal) return;
+    setDeleting(true);
+    const { error } = await supabase.from("deals").delete().eq("id", deal.id);
+    setDeleting(false);
+    if (error) {
+      toast.error(t("toastFailedDelete"));
+      return;
+    }
+    toast.success(t("toastDeleted"));
+    setConfirmDelete(false);
+    onOpenChange(false);
+    onSaved();
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="bg-popover border-border text-popover-foreground sm:max-w-lg w-full p-0"
+      >
+        <div className="flex h-full flex-col">
+          <SheetHeader className="border-b border-border/50 p-4">
+            <SheetTitle className="text-popover-foreground">
+              {deal ? t("editDeal") : t("newDeal")}
+            </SheetTitle>
+          </SheetHeader>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("title")}</Label>
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={t("titlePlaceholder")}
+                className="border-border bg-muted text-foreground"
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("contact")}</Label>
+              <select
+                value={contactId}
+                onChange={(e) => setContactId(e.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+              >
+                <option value="">{t("selectContact")}</option>
+                {contacts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name || c.phone}
+                  </option>
+                ))}
+              </select>
+
+              {linkedConversation && (
+                <Link
+                  href="/inbox"
+                  className="mt-1 inline-flex items-center gap-1.5 self-start rounded-md bg-primary/10 px-2 py-1 text-xs text-primary hover:bg-primary/20"
+                >
+                  <MessageSquare className="h-3 w-3" />
+                  {t("linkToConversation")}
+                </Link>
+              )}
+            </div>
+
+            <div className="grid grid-cols-[1fr_110px] gap-3">
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("value")}</Label>
+                <div className="relative">
+                  <DollarSign className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="number"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    placeholder="0"
+                    className="border-border bg-muted pl-7 text-foreground"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">{t("currency")}</Label>
+                <select
+                  value={currency}
+                  onChange={(e) => setCurrency(e.target.value)}
+                  className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.code}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("expectedCloseDate")}</Label>
+              <Input
+                type="date"
+                value={expectedCloseDate}
+                onChange={(e) => setExpectedCloseDate(e.target.value)}
+                className="border-border bg-muted text-foreground"
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("stage")}</Label>
+              <select
+                value={stageId}
+                onChange={(e) => setStageId(e.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+              >
+                {stages.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("assignedTo")}</Label>
+              <select
+                value={assignedTo}
+                onChange={(e) => setAssignedTo(e.target.value)}
+                className="h-9 w-full rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary"
+              >
+                <option value="">{t("unassigned")}</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.full_name || p.email}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">{t("notes")}</Label>
+              <Textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder={t("notesPlaceholder")}
+                className="min-h-[100px] border-border bg-muted text-foreground"
+              />
+            </div>
+
+            {deal && (
+              <div className="space-y-2 rounded-lg border border-border bg-muted/50 p-3">
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {t("status")}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => handleStatusChange("won")}
+                    disabled={!!statusAction || deal.status === "won"}
+                    className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {statusAction === "won" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        <Check className="mr-1 h-4 w-4" />
+                        {t("markAsWon")}
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => handleStatusChange("lost")}
+                    disabled={!!statusAction || deal.status === "lost"}
+                    className="flex-1 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {statusAction === "lost" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <>
+                        <X className="mr-1 h-4 w-4" />
+                        {t("markAsLost")}
+                      </>
+                    )}
+                  </Button>
+                </div>
+                {deal.status && deal.status !== "open" && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => handleStatusChange("open")}
+                    disabled={!!statusAction}
+                    className="w-full text-muted-foreground hover:text-foreground"
+                  >
+                    {t("reopenDeal")}
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-border/50 bg-popover/80 p-4">
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                className="flex-1 border-border bg-transparent text-muted-foreground hover:bg-muted"
+              >
+                {t("cancel")}
+              </Button>
+              <Button
+                onClick={handleSave}
+                disabled={saving || !title.trim() || !contactId || !stageId}
+                className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {saving ? t("saving") : deal ? t("saveChanges") : t("createDeal")}
+              </Button>
+            </div>
+
+            {deal &&
+              (confirmDelete ? (
+                <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs">
+                  <span className="text-red-300">{t("deletePrompt")}</span>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDelete(false)}
+                      disabled={deleting}
+                      className="rounded px-2 py-1 text-muted-foreground hover:bg-muted"
+                    >
+                      {t("cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDelete}
+                      disabled={deleting}
+                      className="rounded bg-red-600 px-2 py-1 font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {deleting ? t("deleting") : t("confirm")}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="mt-3 flex w-full items-center justify-center gap-1 text-xs text-red-400 hover:text-red-300"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  {t("deleteDeal")}
+                </button>
+              ))}
+          </div>
+        </div>
+      </SheetContent>
+
+      {/* Stage Transition Checklist Modal (067) */}
+      <StageTransitionModal
+        open={transitionModalOpen}
+        onOpenChange={(open) => {
+          setTransitionModalOpen(open);
+          if (!open) setPendingStageChange(null);
+        }}
+        fromStage={deal ? stages.find((s) => s.id === deal.stage_id) ?? null : null}
+        toStage={
+          pendingStageChange
+            ? (stages.find((s) => s.id === pendingStageChange) ?? null)
+            : null
+        }
+        onConfirm={() => {
+          setTransitionModalOpen(false);
+          setPendingStageChange(null);
+          performSave();
+        }}
+      />
+    </Sheet>
+  );
+}

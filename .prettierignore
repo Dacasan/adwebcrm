@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+build
+coverage
+next-env.d.ts
+pnpm-lock.yaml
+# Generated / vendored
+supabase/migrations
+public/opus
