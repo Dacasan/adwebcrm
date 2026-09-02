@@ -1,14 +1,64 @@
 version: 2
 updates:
+  # Runtime + dev dependencies. Weekly on Mondays — keeps the noise
+  # predictable and aligns with a normal review cycle.
+  #
+  # pnpm note: Dependabot supports pnpm versions up to v10 in stable
+  # form; pnpm v11 (used by this project, pinned via packageManager +
+  # pnpm/action-setup) is only in beta on Dependabot and may fail to
+  # parse the pnpm-11 multi-document lockfile on some runs. The
+  # package-ecosystem stays "npm" below because pnpm-lock.yaml is a
+  # superset of npm's manifest reading — Dependabot still watches
+  # package.json for version bumps. If Dependabot starts emitting
+  # "dependency_file_not_parseable" for the lockfile, switch this to:
+  #   package-ecosystem: pnpm
+  # once pnpm v11 lands in stable Dependabot support.
   - package-ecosystem: npm
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    reviewers:
+      - Dacasan
+    labels:
+      - dependencies
     groups:
-      all-dependencies:
+      # Batch related upgrades into one PR so we're not closing six
+      # independent Supabase-bumps per week.
+      supabase:
         patterns:
-          - "*"
+          - "@supabase/*"
+      types:
+        patterns:
+          - "@types/*"
+        update-types:
+          - minor
+          - patch
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Next + React + Tailwind are pinned exactly on purpose. Let
+      # them flow through manual major bumps when we're ready.
+      - dependency-name: next
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: tailwindcss
+      - dependency-name: eslint-config-next
+
+  # GitHub Actions in .github/workflows/. Catches setup-node /
+  # checkout version bumps that keep the CI matrix healthy.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    reviewers:
+      - Dacasan
+    labels:
+      - dependencies
+      - github-actions
