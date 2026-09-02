@@ -1,8 +1,8 @@
 {
-  "name": "wacrm-mcp",
+  "name": "adwebcrm-mcp",
   "version": "0.1.1",
   "mcpName": "io.github.ArnasDon/wacrm-mcp",
-  "description": "Model Context Protocol (MCP) server for wacrm — drive your self-hosted WhatsApp CRM from Claude, Cursor, and other MCP clients.",
+  "description": "Model Context Protocol (MCP) server for adwebcrm — drive your self-hosted multichannel CRM from Claude, Cursor, and other MCP clients.",
   "license": "MIT",
   "author": "Arnas Donauskas",
   "homepage": "https://github.com/ArnasDon/wacrm",

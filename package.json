@@ -1,17 +1,17 @@
 {
-  "name": "wacrm",
-  "version": "0.8.0",
+  "name": "adwebcrm",
+  "version": "1.0.0",
   "private": true,
-  "description": "Self-hostable CRM template for WhatsApp built on Next.js and Supabase — shared inbox, contacts, sales pipelines, broadcasts, and no-code automations.",
+  "description": "Open, self-hostable multichannel CRM — WhatsApp, SMS, voice and email in one shared inbox. Next.js + Supabase.",
   "license": "MIT",
-  "author": "Arnas Donauskas",
-  "homepage": "https://github.com/ArnasDon/wacrm",
+  "author": "DannyCasan",
+  "homepage": "https://github.com/Dacasan/adwebcrm",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArnasDon/wacrm.git"
+    "url": "git+https://github.com/Dacasan/adwebcrm.git"
   },
   "bugs": {
-    "url": "https://github.com/ArnasDon/wacrm/issues"
+    "url": "https://github.com/Dacasan/adwebcrm/issues"
   },
   "keywords": [
     "crm",
@@ -22,7 +22,13 @@
     "automation",
     "broadcast",
     "self-hosted",
-    "template"
+    "template",
+    "sms",
+    "voice",
+    "email",
+    "twilio",
+    "telnyx",
+    "sendgrid"
   ],
   "engines": {
     "node": ">=20.0.0"
