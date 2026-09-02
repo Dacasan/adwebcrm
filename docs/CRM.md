@@ -4,11 +4,10 @@
 > de producción (PostgREST de Supabase). Incluye el MVP de Meta CAPI (Parte A +
 > Parte B T1). No está derivado de ningún otro documento.
 >
-> **Sin sello de commit, a propósito.** Este repo todavía no tiene historia: se
-> publica con un commit único (`docs/ARQUITECTURA.md` §5 del workspace de
-> agencia). El sello anterior apuntaba a `d0fd1fa`, del monorepo archivado, un
-> hash que este repositorio no contiene. Cuando exista el primer commit
-> público, séllalo aquí con **ese** hash y esta fecha.
+> **Publicado el 2026-09-02** en `github.com/Dacasan/adwebcrm` (público):
+> primer commit `8dc1d91` ("Initial public release"), `main` en `660fadd`.
+> El sello anterior apuntaba a `d0fd1fa`, del monorepo archivado — un hash que
+> este repositorio no contiene, y por eso se retiró.
 
 ## Cómo se usa este documento
 
@@ -56,8 +55,7 @@ despliegues separados:
 - **`adwebcrm`** — este. Lo describe este documento.
 - **`sitio-<cliente>`** — el sitio público en Astro, uno por cliente, todos
   construidos sobre el paquete compartido `web-kit`. Lo describe **`SITIO.md`**,
-  en el workspace de agencia (`agenciaweb/docs/sitio/SITIO.md`, destinado a
-  `web-kit/docs/` cuando el kit exista).
+  en el workspace de agencia (`agenciaweb/web-kit/docs/SITIO.md`).
 
 **Son repositorios distintos, no carpetas hermanas.** Ninguna ruta relativa
 llega del uno al otro; refiérete a ellos por nombre de repo. Un cambio que cruce
@@ -104,8 +102,8 @@ ocultos · tocas `god.ts` · cambias el contrato de `/api/events`, `/api/track` 
 > silencio**.
 >
 > **DEF-5 está cerrado (verificado 2026-09-01).** El contrato de tres puntas
-> está completo: `ContactFields.astro:132-133` declara `fbc` y `fbp`,
-> `god.ts:121-122` los rellena, `lead-form.ts:181-182` los lee. Ya no es el
+> está completo: `ContactFields.astro:132-134` declara `fbc`, `fbp` y `referrer`,
+> `god.ts:121-122` los rellena, `lead-form.ts:181-183` los lee. Ya no es el
 > caso que «nunca hayan viajado».
 >
 > **Pero siguen llegando vacíos, y no por este motivo.** El comentario de
@@ -138,7 +136,7 @@ marketing. Multi-tenant por **cuenta**.
 | Tailwind | v4 |
 | Vitest | ^4.1.10 |
 
-**Tamaño:** 594 ficheros `.ts/.tsx`, 139 de test, 102 rutas de API,
+**Tamaño:** 594 ficheros `.ts/.tsx`, 142 de test, 102 rutas de API,
 79 migraciones, 54 tablas y vistas en producción, 31 funciones SQL expuestas.
 
 > ⚠️ El Next.js de este repo tiene APIs distintas a las que la mayoría de
