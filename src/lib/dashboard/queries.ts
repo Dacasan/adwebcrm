@@ -1,0 +1,676 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
+import {
+  daysAgoStart,
+  DOW_SHORT_MON_FIRST,
+  lastNDayKeys,
+  localDayKey,
+  mondayIndex,
+  startOfLocalDay,
+} from './date-utils'
+import type {
+  ActivityItem,
+  ChannelActivity,
+  ConversationsSeriesPoint,
+  MetricsBundle,
+  PipelineDonutData,
+  PipelineStageSlice,
+  ResponseTimeBucket,
+  ResponseTimeSummary,
+  TodayQueueData,
+  TodayQueueDeal,
+  TodayQueueDealRaw,
+} from './types'
+
+// ------------------------------------------------------------
+// All client-side aggregation. RLS scopes every query to the
+// signed-in user automatically, so we never pass user_id explicitly
+// here. Perf is acceptable for the current scale (low thousands of
+// messages) — if a tenant's dataset outgrows this, we'd migrate the
+// heavy aggregations to SQL RPCs. Noted in the PR.
+// ------------------------------------------------------------
+
+type DB = SupabaseClient
+
+// --- 1. Metric cards ---------------------------------------------------
+
+export async function loadMetrics(db: DB): Promise<MetricsBundle> {
+  const todayStart = startOfLocalDay().toISOString()
+  const yesterdayStart = daysAgoStart(1).toISOString()
+
+  const [
+    openConvCur,
+    newConvToday,
+    newConvYesterday,
+    newContactsToday,
+    newContactsYesterday,
+    openDeals,
+    messagesToday,
+    messagesYesterday,
+  ] = await Promise.all([
+    db.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+    db
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'open')
+      .gte('created_at', todayStart),
+    db
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'open')
+      .gte('created_at', yesterdayStart)
+      .lt('created_at', todayStart),
+    db.from('contacts').select('id', { count: 'exact', head: true }).gte('created_at', todayStart),
+    db
+      .from('contacts')
+      .select('id', { count: 'exact', head: true })
+      .gte('created_at', yesterdayStart)
+      .lt('created_at', todayStart),
+    db.from('deals').select('value, status').eq('status', 'open'),
+    db
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('sender_type', 'agent')
+      .gte('created_at', todayStart),
+    db
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('sender_type', 'agent')
+      .gte('created_at', yesterdayStart)
+      .lt('created_at', todayStart),
+  ])
+
+  const openDealsRows = (openDeals.data ?? []) as { value: number | null }[]
+  const openDealsValue = openDealsRows.reduce((sum, d) => sum + (d.value ?? 0), 0)
+
+  return {
+    activeConversations: {
+      current: openConvCur.count ?? 0,
+      // "vs yesterday" on a current-state count has no clean answer
+      // without snapshots — we show the delta in NEW open conversations
+      // today vs yesterday. That's the business-meaningful daily signal.
+      previous: (newConvToday.count ?? 0) - (newConvYesterday.count ?? 0),
+    },
+    newContactsToday: {
+      current: newContactsToday.count ?? 0,
+      previous: newContactsYesterday.count ?? 0,
+    },
+    openDealsValue,
+    openDealsCount: openDealsRows.length,
+    messagesSentToday: {
+      current: messagesToday.count ?? 0,
+      previous: messagesYesterday.count ?? 0,
+    },
+  }
+}
+
+// --- 2. Conversations over time ---------------------------------------
+
+export async function loadConversationsSeries(
+  db: DB,
+  rangeDays: number,
+): Promise<ConversationsSeriesPoint[]> {
+  const start = daysAgoStart(rangeDays - 1).toISOString()
+  const { data, error } = await db
+    .from('messages')
+    .select('created_at, sender_type')
+    .gte('created_at', start)
+    .order('created_at', { ascending: true })
+  if (error) throw error
+
+  const keys = lastNDayKeys(rangeDays)
+  const buckets = new Map<string, { incoming: number; outgoing: number }>()
+  for (const k of keys) buckets.set(k, { incoming: 0, outgoing: 0 })
+
+  for (const row of (data ?? []) as { created_at: string; sender_type: string }[]) {
+    const key = localDayKey(row.created_at)
+    const bucket = buckets.get(key)
+    if (!bucket) continue
+    if (row.sender_type === 'customer') bucket.incoming += 1
+    else bucket.outgoing += 1 // agent + bot both count as outgoing
+  }
+
+  return keys.map((day) => ({ day, ...(buckets.get(day) ?? { incoming: 0, outgoing: 0 }) }))
+}
+
+// --- 3. Pipeline donut -------------------------------------------------
+
+export async function loadPipelineDonut(db: DB): Promise<PipelineDonutData> {
+  const [stagesRes, dealsRes] = await Promise.all([
+    db.from('pipeline_stages').select('id, name, color, pipeline_id, position').order('position'),
+    db.from('deals').select('stage_id, value, status').eq('status', 'open'),
+  ])
+
+  const stages =
+    (stagesRes.data ?? []) as { id: string; name: string; color: string }[]
+  const deals = (dealsRes.data ?? []) as { stage_id: string; value: number | null }[]
+
+  const byStage = new Map<string, { count: number; total: number }>()
+  for (const d of deals) {
+    const row = byStage.get(d.stage_id) ?? { count: 0, total: 0 }
+    row.count += 1
+    row.total += d.value ?? 0
+    byStage.set(d.stage_id, row)
+  }
+
+  const slices: PipelineStageSlice[] = stages
+    .map((s) => ({
+      id: s.id,
+      name: s.name,
+      color: s.color || '#64748b',
+      dealCount: byStage.get(s.id)?.count ?? 0,
+      totalValue: byStage.get(s.id)?.total ?? 0,
+    }))
+    // Hide empty stages from the ring (but we'd still show them in the
+    // legend if the user wanted a full breakdown — trimming keeps the
+    // visual clean for the common case).
+    .filter((s) => s.totalValue > 0 || s.dealCount > 0)
+
+  return {
+    stages: slices,
+    totalValue: slices.reduce((sum, s) => sum + s.totalValue, 0),
+  }
+}
+
+// --- 4. Response time by day of week ----------------------------------
+
+export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
+  // Pull the last 14 days of messages in one shot, then walk per
+  // conversation to find each "first inbound" → "first subsequent
+  // outbound" pair. 14 days gives us both "this week" + "last week"
+  // with enough overlap if the user opens the dashboard late on a
+  // Monday.
+  const fourteenDaysAgo = daysAgoStart(13).toISOString()
+  const { data, error } = await db
+    .from('messages')
+    .select('conversation_id, sender_type, created_at')
+    .gte('created_at', fourteenDaysAgo)
+    .order('conversation_id', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+
+  const rows = (data ?? []) as {
+    conversation_id: string
+    sender_type: string
+    created_at: string
+  }[]
+
+  // Group per conversation, pair unreplied customer messages with the
+  // next outbound message from the agent/bot. A single customer message
+  // can only count once (avoids inflating averages if the customer
+  // double-messages while the agent takes time to reply).
+  interface Sample {
+    customerAt: Date
+    responseAt: Date
+  }
+  const samples: Sample[] = []
+
+  let currentConv = ''
+  let pendingCustomer: Date | null = null
+  for (const row of rows) {
+    if (row.conversation_id !== currentConv) {
+      currentConv = row.conversation_id
+      pendingCustomer = null
+    }
+    const ts = new Date(row.created_at)
+    if (row.sender_type === 'customer') {
+      if (!pendingCustomer) pendingCustomer = ts
+    } else if (pendingCustomer) {
+      samples.push({ customerAt: pendingCustomer, responseAt: ts })
+      pendingCustomer = null
+    }
+  }
+
+  const now = new Date()
+  const thisWeekStart = daysAgoStart(mondayIndex(now))
+  const lastWeekStart = daysAgoStart(mondayIndex(now) + 7)
+
+  // Per-day-of-week buckets, averaged over both weeks' worth of data
+  // so each bar has more samples to stand on. If a day has no samples
+  // its avgMinutes stays null and the chart renders the bar muted.
+  const byDow = new Map<number, number[]>()
+  for (let i = 0; i < 7; i++) byDow.set(i, [])
+  const thisWeekMins: number[] = []
+  const lastWeekMins: number[] = []
+
+  for (const s of samples) {
+    const diffMin = (s.responseAt.getTime() - s.customerAt.getTime()) / 60_000
+    if (diffMin < 0) continue
+    const dow = mondayIndex(s.customerAt)
+    byDow.get(dow)!.push(diffMin)
+    if (s.customerAt >= thisWeekStart) {
+      thisWeekMins.push(diffMin)
+    } else if (s.customerAt >= lastWeekStart && s.customerAt < thisWeekStart) {
+      lastWeekMins.push(diffMin)
+    }
+  }
+
+  const avg = (arr: number[]) =>
+    arr.length === 0 ? null : arr.reduce((a, b) => a + b, 0) / arr.length
+
+  const buckets: ResponseTimeBucket[] = Array.from({ length: 7 }, (_, dow) => {
+    const samples = byDow.get(dow) ?? []
+    return {
+      dow,
+      avgMinutes: avg(samples),
+      samples: samples.length,
+    }
+  })
+
+  // Silence unused-label warnings — keep the arrays explicitly named
+  // for readability above.
+  void DOW_SHORT_MON_FIRST
+
+  return {
+    buckets,
+    thisWeekAvg: avg(thisWeekMins),
+    lastWeekAvg: avg(lastWeekMins),
+  }
+}
+
+// --- 5. Activity feed --------------------------------------------------
+
+export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> {
+  // Pull ~10 from each source (plenty of headroom after merge-sort),
+  // then interleave by timestamp. The individual per-table limits
+  // keep the payload small; the final limit is enforced after sort.
+  // state_changed (tracking_events) es el historial de won/lost emitido
+  // por transition_deal — sin esto el feed solo refleja el estado actual.
+  const [msgs, contacts, deals, broadcasts, autoLogs, stateChanges] = await Promise.all([
+    db
+      .from('messages')
+      .select('id, content_text, sender_type, created_at, conversation_id, conversations(contact_id, contacts(name, phone))')
+      .eq('sender_type', 'customer')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    db
+      .from('contacts')
+      .select('id, name, phone, created_at')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    db
+      .from('deals')
+      .select('id, title, updated_at, status, stage:pipeline_stages(name)')
+      .order('updated_at', { ascending: false })
+      .limit(10),
+    db
+      .from('broadcasts')
+      .select('id, name, status, total_recipients, created_at')
+      .order('created_at', { ascending: false })
+      .limit(5),
+    db
+      .from('automation_logs')
+      .select('id, trigger_event, status, created_at, automation:automations(name), contact:contacts(name, phone)')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    db
+      .from('tracking_events')
+      .select('id, event_type, payload, created_at')
+      .eq('event_type', 'state_changed')
+      .order('created_at', { ascending: false })
+      .limit(10),
+  ])
+
+  const items: ActivityItem[] = []
+
+  // PostgREST returns nested selections as arrays by default, even when
+  // the foreign key is 1:1. We normalise by taking [0] on each level.
+  for (const m of (msgs.data ?? []) as unknown as Array<{
+    id: string
+    content_text: string | null
+    created_at: string
+    conversation_id: string
+    conversations:
+      | { contact_id: string | null; contacts: { name: string | null; phone: string }[] | { name: string | null; phone: string } | null }[]
+      | { contact_id: string | null; contacts: { name: string | null; phone: string }[] | { name: string | null; phone: string } | null }
+      | null
+  }>) {
+    const conv = Array.isArray(m.conversations) ? m.conversations[0] : m.conversations
+    const contact = Array.isArray(conv?.contacts) ? conv?.contacts[0] : conv?.contacts
+    const who = contact?.name || contact?.phone || 'Unknown'
+    items.push({
+      id: `msg-${m.id}`,
+      kind: 'message',
+      text: `New message from ${who}`,
+      at: m.created_at,
+      href: `/inbox?c=${m.conversation_id}`,
+    })
+  }
+
+  for (const c of (contacts.data ?? []) as Array<{ id: string; name: string | null; phone: string; created_at: string }>) {
+    items.push({
+      id: `contact-${c.id}`,
+      kind: 'contact',
+      text: `New contact: ${c.name || c.phone}`,
+      at: c.created_at,
+      href: '/contacts',
+    })
+  }
+
+  for (const d of (deals.data ?? []) as unknown as Array<{
+    id: string
+    title: string
+    updated_at: string
+    stage: { name: string }[] | { name: string } | null
+  }>) {
+    const stage = Array.isArray(d.stage) ? d.stage[0] : d.stage
+    items.push({
+      id: `deal-${d.id}`,
+      kind: 'deal',
+      text: stage?.name
+        ? `Deal "${d.title}" in ${stage.name}`
+        : `Deal "${d.title}" updated`,
+      at: d.updated_at,
+      href: '/pipelines',
+    })
+  }
+
+  for (const b of (broadcasts.data ?? []) as Array<{
+    id: string
+    name: string
+    status: string
+    total_recipients: number
+    created_at: string
+  }>) {
+    const label =
+      b.status === 'sent'
+        ? `sent to ${b.total_recipients} contacts`
+        : `${b.status} (${b.total_recipients} recipients)`
+    items.push({
+      id: `broadcast-${b.id}`,
+      kind: 'broadcast',
+      text: `Broadcast "${b.name}" ${label}`,
+      at: b.created_at,
+      href: '/broadcasts',
+    })
+  }
+
+  for (const l of (autoLogs.data ?? []) as unknown as Array<{
+    id: string
+    trigger_event: string
+    status: string
+    created_at: string
+    automation: { name: string }[] | { name: string } | null
+    contact: { name: string | null; phone: string }[] | { name: string | null; phone: string } | null
+  }>) {
+    const automation = Array.isArray(l.automation) ? l.automation[0] : l.automation
+    const contact = Array.isArray(l.contact) ? l.contact[0] : l.contact
+    const who = contact?.name || contact?.phone || 'a contact'
+    const autoName = automation?.name || 'Automation'
+    items.push({
+      id: `auto-${l.id}`,
+      kind: 'automation',
+      text: `Automation "${autoName}" ${l.status === 'failed' ? 'failed for' : 'triggered for'} ${who}`,
+      at: l.created_at,
+    })
+  }
+
+  // Mapa deal_id → título para dar contexto a los state_changed (cuyo
+  // payload solo trae deal_id — verificado en DB).
+  const dealTitleById = new Map<string, string>()
+  for (const d of (deals.data ?? []) as unknown as Array<{
+    id: string
+    title: string
+  }>) {
+    dealTitleById.set(d.id, d.title)
+  }
+
+  for (const sc of (stateChanges.data ?? []) as unknown as Array<{
+    id: string
+    payload:
+      | {
+          deal_id?: string
+          to_status?: string
+          from_status?: string
+        }
+      | null
+    created_at: string
+  }>) {
+    const p = sc.payload
+    const status = p?.to_status
+    if (status && status !== 'open') {
+      const title = p?.deal_id ? dealTitleById.get(p.deal_id) : undefined
+      const base = title ? `Deal "${title}"` : 'Deal'
+      const label =
+        status === 'won'
+          ? `${base} marked as won`
+          : status === 'lost'
+            ? `${base} marked as lost`
+            : null
+      if (label) {
+        items.push({
+          id: `state-${sc.id}`,
+          kind: 'deal',
+          text: label,
+          at: sc.created_at,
+          href: '/pipelines',
+        })
+      }
+    }
+  }
+
+  return items
+    .sort((a, b) => (a.at > b.at ? -1 : a.at < b.at ? 1 : 0))
+    .slice(0, limit)
+}
+
+// --- 6. Cola de Hoy (DAD §7.4) -----------------------------------------
+
+/**
+ * Deals abiertos con su contacto y la última interacción. La partición en
+ * 🔥⏳💤 se hace acá (lógica pura, testeable), no en el componente:
+ *   - 🔥 hot     — urgencia=2 (menos de 30 días)
+ *   - ⏳ docs    — documentos != 2 (esperando docs)
+ *   - 💤 nurture — el resto
+ * Dentro de cada sección: prioridad desc (top > warm > tibio > cold), y como
+ * tie-break la última interacción más reciente. No se muestra score numérico.
+ */
+const SECTION_PRIORITY_ORDER: Record<string, number> = {
+  top: 3,
+  warm: 2,
+  tibio: 1,
+  cold: 0,
+}
+
+export async function loadTodayQueue(db: DB): Promise<TodayQueueData> {
+  const { data, error } = await db
+    .from('deals')
+    .select(
+      'id, title, value, currency, status, score, priority, tags, expected_close_date, ' +
+        'stage_id, pipeline_id, ' +
+        'assignee:profiles!deals_assigned_to_fkey(id, full_name), ' +
+        'contact:contacts(id, name, phone, email), ' +
+        'conversation:conversations!deals_conversation_id_fkey(id, last_message_at, last_message_text)',
+    )
+    .eq('status', 'open')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+
+  const rows = (data ?? []) as unknown as TodayQueueDealRaw[]
+
+  // Última automatización ejecutada por contacto (DAD §3.x — la cola muestra
+  // el email/secuencia que ya se envió, no score numérico). Un fetch por
+  // contact_id en la lista (LOOP con valores acotados) para no inflar el pluck.
+  const contactIds = [
+    ...new Set(
+      rows
+        .map((d) =>
+          Array.isArray(d.contact) ? d.contact[0]?.id : d.contact?.id,
+        )
+        .filter((id): id is string => !!id),
+    ),
+  ]
+  const automationByName = new Map<string, string>()
+  if (contactIds.length > 0) {
+    const { data: autoRes, error: autoErr } = await db
+      .from('automation_logs')
+      .select('contact_id, status, created_at, automation:automations(name)')
+      .in('contact_id', contactIds)
+      .in('status', ['completed', 'running'])
+      .order('created_at', { ascending: false })
+    if (!autoErr && autoRes) {
+      for (const a of autoRes as unknown as Array<{
+        contact_id: string
+        automation: { name: string }[] | { name: string } | null
+      }>) {
+        const name = Array.isArray(a.automation)
+          ? a.automation[0]?.name
+          : a.automation?.name
+        if (name && !automationByName.has(a.contact_id))
+          automationByName.set(a.contact_id, name)
+      }
+    }
+  }
+
+  const withAutomation = rows.map((r) => {
+    const contactId = Array.isArray(r.contact)
+      ? r.contact[0]?.id
+      : r.contact?.id
+    const autoName = contactId ? automationByName.get(contactId) : undefined
+    return {
+      ...r,
+      lastAutomation: autoName ? { name: autoName, trigger_event: '' } : null,
+    }
+  })
+
+  return partitionTodayQueue(withAutomation as unknown as TodayQueueDealRaw[])
+}
+
+/**
+ * Lógica pura de la Cola de Hoy (DAD §7.4) — sin I/O, testeable:
+ *   - 🔥 hot     — urgencia=2 (menos de 30 días)
+ *   - ⏳ docs    — documentos != 2 (esperando docs)
+ *   - 💤 nurture — el resto
+ * Dentro de cada sección: prioridad desc (top > warm > tibio > cold), y como
+ * tie-break la última interacción más reciente (conversations.last_message_at).
+ * Recibe filas crudas de PostgREST (relaciones como array 1:1) y las normaliza.
+ */
+export function partitionTodayQueue(rows: TodayQueueDealRaw[]): TodayQueueData {
+  // PostgREST devuelve las relaciones anidadas como arrays aunque sean 1:1.
+  const normalize = (d: TodayQueueDealRaw): TodayQueueDeal => ({
+    ...d,
+    contact: Array.isArray(d.contact) ? d.contact[0] ?? null : d.contact,
+    conversation: Array.isArray(d.conversation)
+      ? d.conversation[0] ?? null
+      : d.conversation,
+  })
+
+  const hot: TodayQueueDeal[] = []
+  const docs: TodayQueueDeal[] = []
+  const nurture: TodayQueueDeal[] = []
+
+  for (const raw of rows) {
+    const row = normalize(raw)
+    // Sin tags (deal sin puntuar aún) → nurturing: "el resto" (§7.4).
+    // Solo los deals con urgencia=2 van a 🔥; solo los puntuados con
+    // documentos != 2 esperan docs. El resto nutre.
+    if (!row.tags) {
+      nurture.push(row)
+      continue
+    }
+    const urgencia = row.tags.urgencia ?? 0
+    const documentos = row.tags.documentos ?? 0
+    if (urgencia === 2) hot.push(row)
+    else if (documentos !== 2) docs.push(row)
+    else nurture.push(row)
+  }
+
+  const sortSection = (section: TodayQueueDeal[]): TodayQueueDeal[] =>
+    [...section].sort(
+      (a, b) =>
+        (SECTION_PRIORITY_ORDER[b.priority ?? ''] ?? -1) -
+          (SECTION_PRIORITY_ORDER[a.priority ?? ''] ?? -1) ||
+        (b.conversation?.last_message_at ?? '').localeCompare(
+          a.conversation?.last_message_at ?? '',
+        ) ||
+        a.id.localeCompare(b.id), // tie-break determinista
+    )
+
+  const sections = [
+    { key: 'hot' as const, deals: sortSection(hot) },
+    { key: 'docs' as const, deals: sortSection(docs) },
+    { key: 'nurture' as const, deals: sortSection(nurture) },
+  ]
+
+  return { sections, total: rows.length }
+}
+
+// --- 6. Actividad de correo y llamadas ---------------------------------
+//
+// Vienen de /reports, donde eran dos pestañas. Un contador de correos
+// entregados no es analítica de adquisición: es un recibo de actividad, y su
+// sitio es el panel de inicio junto al resto de tarjetas.
+//
+// Como el resto de este módulo, usan el cliente del navegador: RLS acota por
+// cuenta automáticamente y no hace falta pasar account_id.
+
+export async function loadChannelActivity(
+  db: DB,
+  days = 30
+): Promise<ChannelActivity> {
+  const since = daysAgoStart(days).toISOString()
+
+  const [emails, calls, received, campaigns] = await Promise.all([
+    db.from('email_sends').select('status').gte('sent_at', since),
+    // `duration_sec` y `disposition` son los nombres reales de la migración
+    // 039 — `duration_seconds` no existe y devolvía 400.
+    db.from('calls').select('status, disposition, duration_sec').gte('created_at', since),
+    // Recibidos: el webhook de Resend ingesta en `messages` con
+    // channel='email' (lib/inbound/email-ingest.ts) — email_sends es SOLO
+    // saliente (no tiene `direction`), así que contarlos aquí era imposible.
+    db
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('channel', 'email')
+      .eq('sender_type', 'customer')
+      .gte('created_at', since),
+    // Los envíos de CAMPAÑA no tocan email_sends (053:35) — van a
+    // email_campaign_recipients. Sin ellos "sent" subcontaba.
+    db.from('email_campaign_recipients').select('status').gte('sent_at', since),
+  ])
+
+  const emailRows = (emails.data ?? []) as { status: string }[]
+  const campaignRows = (campaigns.data ?? []) as { status: string }[]
+  const callRows = (calls.data ?? []) as {
+    status: string
+    disposition: string | null
+    duration_sec: number | null
+  }[]
+
+  const bounced =
+    emailRows.filter((e) => e.status === 'bounced').length +
+    campaignRows.filter((c) => c.status === 'bounced').length
+  const answered = callRows.filter((c) => c.status === 'answered' || c.status === 'ended').length
+
+  // "Sent" real: ni `queued` (aún no salió) ni `failed` son envíos;
+  // delivered/opened/clicked en campañas implican envío y entrega.
+  const sent =
+    emailRows.filter(
+      (e) => e.status === 'sent' || e.status === 'delivered' || e.status === 'bounced'
+    ).length +
+    campaignRows.filter((c) => c.status !== 'pending' && c.status !== 'failed').length
+  const delivered =
+    emailRows.filter((e) => e.status === 'delivered').length +
+    campaignRows.filter(
+      (c) => c.status === 'delivered' || c.status === 'opened' || c.status === 'clicked'
+    ).length
+
+  return {
+    days,
+    email: {
+      sent,
+      delivered,
+      bounced,
+      received: received.count ?? 0,
+    },
+    calls: {
+      total: callRows.length,
+      // La perdida se marca en `disposition`, no en `status`: la escalera de
+      // status es initiated/ringing/answered/ended.
+      missed: callRows.filter((c) => c.disposition === 'missed').length,
+      answered,
+      totalMinutes: Math.round(
+        callRows.reduce((acc, c) => acc + (c.duration_sec ?? 0), 0) / 60
+      ),
+    },
+  }
+}
