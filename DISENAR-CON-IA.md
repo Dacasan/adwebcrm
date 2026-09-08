@@ -23,7 +23,7 @@ REGLAS DEL SISTEMA — no negociables:
   grep -n "\.loQueBuscas" src/styles/*.css
 - Tema activo: blanco frío #F6F9FC, azul de marca #274C77 (8.33:1),
   Bricolage Grotesque + Onest (self-hosted, sin Google Fonts), radios
-  3-4px, sin sombras, filete en vez de relleno. La marca se configura en
+  3-4px, sin sombras, borde en vez de relleno. La marca se configura en
   src/data/site.ts (`theme.primary`…), que BaseLayout vuelca en `:root`.
 
 ENTREGA:
@@ -56,7 +56,7 @@ Frases que funcionan mejor que "no me gusta":
 | En vez de | Di |
 |---|---|
 | "se ve viejo" | "el fondo tira a cálido, lo quiero azulado" |
-| "muy cargado" | "menos rellenos sólidos, más filete" |
+| "muy cargado" | "menos rellenos sólidos, más borde" |
 | "más moderno" | "menos redondeo" o "menos saturación en el azul" |
 | "hazlo bonito" | enséñame una referencia y di qué te gusta de ella |
 
@@ -86,7 +86,7 @@ theme: {
 
 `BaseLayout` los vuelca en un `<style>:root{…}</style>` fuera de las
 capas (lo no-capado gana siempre a lo capado — mismo mecanismo que los
-`<style>` con scope de un `.astro`). La **estructura** (fondo, filete,
+`<style>` con scope de un `.astro`). La **estructura** (fondo, borde,
 radios, sombras) vive en los tokens de `src/styles/02-tokens.css` y es
 global: tocar un token repinta todo el sitio, no una página.
 
@@ -155,7 +155,7 @@ Tres cosas que salieron solas en esta sesión y que valen para las próximas:
 sobre blanco y fallaba con 4.38:1 sobre arena. Si cambias `--bg-color`, hay que
 revalidar todo lo que va encima. No es opcional.
 
-**Los bordes tienen dos funciones distintas.** Un filete decorativo puede ir a
+**Los bordes tienen dos funciones distintas.** Un borde decorativo puede ir a
 1.2:1. El borde de un campo de formulario o de una tarjeta clicable **es** un
 componente de interfaz y WCAG 1.4.11 le pide 3:1. Por eso el tema trae
 `--border-color` y `--border-strong`.

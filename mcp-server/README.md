@@ -9,7 +9,7 @@ and others) drive your CRM in natural language:
 > "Find the contact for +1 415 555 0123 and show the last few messages."
 > "Draft and send an order-update template to Jane."
 
-It's a thin wrapper over the CRM's public [`/api/v1`](../docs/CRM.md#la-api-pública-v1-y-el-servidor-mcp)
+It's a thin wrapper over the CRM's public [`/api/v1`](https://docs.adwebcrm.com/crm/public-api/)
 REST API — endpoints and scopes are listed there. All auth, scoping, and rate limiting are enforced by your
 wacrm instance — this server just exposes the API as MCP tools.
 

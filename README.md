@@ -101,10 +101,10 @@ the same policy applies on both sides.
 doors and end up in the same conversation. The only thing separating them is a
 channel marker on each message.
 
-**Automations are the engine.** Something happens, a sequence runs. Triggers and
-available steps are enumerated in [`docs/CRM.md`](./docs/CRM.md), which is
-generated from the code and the schema and is the document to read before
-changing anything.
+**Automations are the engine.** Something happens, a sequence runs. All 22
+triggers and 16 steps are enumerated in the
+[automations reference](https://docs.adwebcrm.com/crm/automations/), verified
+against the type unions in `src/types/index.ts`.
 
 ---
 
@@ -164,8 +164,8 @@ Yes, please. Being vibecoded means there is plenty here that a careful reader
 will improve, and we'd rather that happen in the open.
 
 Useful places to start: the [open issues](https://github.com/Dacasan/adwebcrm/issues),
-anything in `docs/CRM.md` that no longer matches the code, and test coverage on
-the provider adapters. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and the PR
+anything in the [documentation](https://docs.adwebcrm.com) that no longer
+matches the code, and test coverage on the provider adapters. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) and the PR
 template.
 
 House rules that will save you a round trip: pnpm only, the full suite green
