@@ -55,7 +55,7 @@
     "@sendgrid/mail": "^8.1.6",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.115.0",
-    "@telnyx/webrtc": "^2.27.8",
+    "@telnyx/webrtc": "^2.27.10",
     "@twilio/voice-sdk": "^2.18.3",
     "@xyflow/react": "^12.11.2",
     "class-variance-authority": "^0.7.1",
