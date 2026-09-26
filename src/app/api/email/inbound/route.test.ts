@@ -16,11 +16,11 @@ vi.mock('@/lib/email/send', () => ({
 // El reenvío a bandeja externa se mockea entero: aquí solo importa SI se
 // dispara y con qué argumentos. El contrato del SDK (`emails.receiving
 // .forward`) lo valida `pnpm typecheck` contra los tipos instalados.
-vi.mock('@/lib/inbound/forward', () => ({
+vi.mock('@/lib/email/forward', () => ({
   forwardReceivedEmail: vi.fn(async () => ({ status: 'skipped' })),
 }))
 
-import { forwardReceivedEmail } from '@/lib/inbound/forward'
+import { forwardReceivedEmail } from '@/lib/email/forward'
 
 vi.mock('@/lib/telnyx/admin-client', () => ({
   supabaseAdmin: () => currentAdmin,

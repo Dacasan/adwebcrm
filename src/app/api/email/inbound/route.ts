@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { ingestInboundEmail } from '@/lib/inbound/email-ingest'
-import { forwardReceivedEmail } from '@/lib/inbound/forward'
+import { forwardReceivedEmail } from '@/lib/email/forward'
 import { EmailError, verifyResendWebhook } from '@/lib/email/send'
 import { supabaseAdmin } from '@/lib/telnyx/admin-client'
 
@@ -25,7 +25,7 @@ import { supabaseAdmin } from '@/lib/telnyx/admin-client'
 //
 // Reenvío: si EMAIL_FORWARD_TO está configurado, cada correo ingestado
 // (`status === 'stored'`) manda una copia a esas bandejas externas vía
-// `resend.emails.receiving.forward` (src/lib/inbound/forward.ts). Solo
+// `resend.emails.receiving.forward` (src/lib/email/forward.ts). Solo
 // en `stored` — el dedupe por provider_message_id evita copias dobles —
 // y fail-open: un fallo no cambia el ack.
 // ============================================================
