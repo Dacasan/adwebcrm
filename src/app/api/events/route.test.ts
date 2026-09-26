@@ -98,8 +98,13 @@ vi.mock('@/lib/analytics/ip-geo', () => ({
   lookupIpGeo: vi.fn(async () => ({})),
 }))
 
+vi.mock('@/lib/email/lead-notify', () => ({
+  notifyNewLead: vi.fn(async () => ({ status: 'sent' })),
+}))
+
 import { POST } from './route'
 import { lookupIpGeo } from '@/lib/analytics/ip-geo'
+import { notifyNewLead } from '@/lib/email/lead-notify'
 
 function makeFormSubmitReq(): Request {
   return new Request('http://localhost/api/events', {
@@ -115,6 +120,8 @@ function makeFormSubmitReq(): Request {
 
 beforeEach(() => {
   h.ops = []
+  vi.mocked(notifyNewLead).mockClear()
+  vi.mocked(notifyNewLead).mockResolvedValue({ status: 'sent' })
   vi.mocked(lookupIpGeo).mockReset()
   vi.mocked(lookupIpGeo).mockImplementation(async () => ({}))
 })
@@ -181,5 +188,29 @@ describe('POST /api/events form_submit — geo + señales del servidor', () => {
     for (const row of projection) {
       expect(row).not.toHaveProperty('account_id')
     }
+  })
+
+  it('dispara notifyNewLead con los datos del lead (aviso EMAIL_FORWARD_TO)', async () => {
+    const res = await POST(makeFormSubmitReq() as never)
+    expect(res.status).toBe(202)
+    expect(notifyNewLead).toHaveBeenCalledTimes(1)
+    expect(notifyNewLead).toHaveBeenCalledWith(
+      'acct-1',
+      expect.objectContaining({
+        name: 'Juan',
+        email: 'x@y.com',
+        phone: '+5299812345678',
+      })
+    )
+  })
+
+  it('un notify que RECHAZA no impide el 202 (fail-open, doble capa)', async () => {
+    vi.mocked(notifyNewLead).mockRejectedValueOnce(new Error('correo caído'))
+    const res = await POST(makeFormSubmitReq() as never)
+    expect(res.status).toBe(202)
+    // el lead igual se intentó persistir
+    expect(
+      h.ops.some((o) => o.table === 'tracking_events' && o.type === 'upsert')
+    ).toBe(true)
   })
 })

@@ -26,6 +26,7 @@ import { supabaseAdmin } from '@/lib/automations/admin-client';
 import { resolveLandingAccountId } from '@/lib/analytics/landing-account';
 import { findOrCreateContact, resolveAuditUserId } from '@/lib/api/v1/contacts';
 import { withCors, handlePreflight } from '@/lib/cors';
+import { notifyNewLead } from '@/lib/email/lead-notify';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -175,6 +176,31 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error('[api/events] findOrCreateContact error:', err);
       return withCors(NextResponse.json({ error: 'lead_failed' }, { status: 500 }), req);
+    }
+
+    // Aviso por correo a la bandeja externa (EMAIL_FORWARD_TO): el lead
+    // del formulario también llega por correo a la bandeja que supervisa
+    // la cuenta. Fail-open en dos capas: notifyNewLead nunca lanza y este
+    // try/catch propio garantiza que nada de este bloque decida el 202 —
+    // el lead ya existe y la respuesta depende solo del upsert de abajo.
+    try {
+      const notify = await notifyNewLead(account_id, {
+        name: typeof payload?.name === 'string' ? payload.name : undefined,
+        email: typeof payload?.email === 'string' ? payload.email : undefined,
+        phone,
+        consent: typeof payload?.consent === 'boolean' ? payload.consent : undefined,
+        refCode: ref_code,
+        landingSlug: landing_slug,
+        utm: attribution?.utm,
+      });
+      if (notify.status !== 'sent') {
+        console.warn('[api/events] lead notify:', notify.status, notify.detail);
+      }
+    } catch (err) {
+      console.warn(
+        '[api/events] lead notify failed (fail-open):',
+        err instanceof Error ? err.message : err
+      );
     }
   }
 
