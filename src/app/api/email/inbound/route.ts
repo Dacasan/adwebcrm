@@ -170,7 +170,11 @@ export async function POST(req: NextRequest) {
   // ingesta creó el mensaje: en `duplicate`/`ignored` no hay nada nuevo
   // que copiar, y Resend reintentaría si respondiéramos 500.
   if (result.status === 'stored') {
-    const fwd = await forwardReceivedEmail(configs[0].account_id, emailId)
+    const fwd = await forwardReceivedEmail(
+      configs[0].account_id,
+      emailId,
+      configs[0].from_email,
+    )
     if (fwd.status === 'failed') {
       console.error('[email:inbound] reenvío falló:', fwd.detail)
     }

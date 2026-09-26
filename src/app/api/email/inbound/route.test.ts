@@ -256,7 +256,7 @@ describe('POST /api/email/inbound (ingesta)', () => {
     const res = await post(JSON.stringify(RECEIVED_EVENT))
     expect((await res.json()).result).toBe('stored')
     expect(mockedForward).toHaveBeenCalledTimes(1)
-    expect(mockedForward).toHaveBeenCalledWith('acc-1', 'e-123')
+    expect(mockedForward).toHaveBeenCalledWith('acc-1', 'e-123', 'hello@example.com')
   })
 
   it('duplicate → NO reenvía (evita copia doble en la bandeja externa)', async () => {
