@@ -13,6 +13,15 @@ vi.mock('@/lib/email/send', () => ({
   EmailError: class EmailError extends Error {},
 }))
 
+// El reenvío a bandeja externa se mockea entero: aquí solo importa SI se
+// dispara y con qué argumentos. El contrato del SDK (`emails.receiving
+// .forward`) lo valida `pnpm typecheck` contra los tipos instalados.
+vi.mock('@/lib/inbound/forward', () => ({
+  forwardReceivedEmail: vi.fn(async () => ({ status: 'skipped' })),
+}))
+
+import { forwardReceivedEmail } from '@/lib/inbound/forward'
+
 vi.mock('@/lib/telnyx/admin-client', () => ({
   supabaseAdmin: () => currentAdmin,
 }))
@@ -20,6 +29,7 @@ vi.mock('@/lib/telnyx/admin-client', () => ({
 import { EmailError, verifyResendWebhook } from '@/lib/email/send'
 
 const mockedVerify = vi.mocked(verifyResendWebhook)
+const mockedForward = vi.mocked(forwardReceivedEmail)
 
 type Row = Record<string, unknown>
 
@@ -234,5 +244,27 @@ describe('POST /api/email/inbound (ingesta)', () => {
 
     const res = await post(JSON.stringify(RECEIVED_EVENT))
     expect((await res.json()).result).toBe('duplicate')
+  })
+
+  it('stored → reenvía a EMAIL_FORWARD_TO con la cuenta y el email_id', async () => {
+    await stubAndVerify()
+    currentAdmin = makeAdmin({
+      emailConfig: CONFIG,
+      account: { owner_user_id: 'u-owner' },
+    })
+
+    const res = await post(JSON.stringify(RECEIVED_EVENT))
+    expect((await res.json()).result).toBe('stored')
+    expect(mockedForward).toHaveBeenCalledTimes(1)
+    expect(mockedForward).toHaveBeenCalledWith('acc-1', 'e-123')
+  })
+
+  it('duplicate → NO reenvía (evita copia doble en la bandeja externa)', async () => {
+    await stubAndVerify()
+    currentAdmin = makeAdmin({ emailConfig: CONFIG, dupe: { id: 'm-old' } })
+
+    const res = await post(JSON.stringify(RECEIVED_EVENT))
+    expect((await res.json()).result).toBe('duplicate')
+    expect(mockedForward).not.toHaveBeenCalled()
   })
 })

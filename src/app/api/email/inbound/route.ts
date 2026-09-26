@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { ingestInboundEmail } from '@/lib/inbound/email-ingest'
+import { forwardReceivedEmail } from '@/lib/inbound/forward'
 import { EmailError, verifyResendWebhook } from '@/lib/email/send'
 import { supabaseAdmin } from '@/lib/telnyx/admin-client'
 
@@ -21,6 +22,12 @@ import { supabaseAdmin } from '@/lib/telnyx/admin-client'
 // (GET /received-emails/:id), que exige una key con permiso de lectura
 // (RESEND_INBOUND_API_KEY). Si el payload llegara a traer text/html se
 // usa y no se llama a la API.
+//
+// Reenvío: si EMAIL_FORWARD_TO está configurado, cada correo ingestado
+// (`status === 'stored'`) manda una copia a esas bandejas externas vía
+// `resend.emails.receiving.forward` (src/lib/inbound/forward.ts). Solo
+// en `stored` — el dedupe por provider_message_id evita copias dobles —
+// y fail-open: un fallo no cambia el ack.
 // ============================================================
 
 interface InboundWebhookPayload {
@@ -157,6 +164,16 @@ export async function POST(req: NextRequest) {
   // de tracking).
   if (result.status === 'ignored') {
     console.warn('[email:inbound] ignorado:', result.reason)
+  }
+
+  // Reenvío opcional a bandeja externa (EMAIL_FORWARD_TO). Solo cuando la
+  // ingesta creó el mensaje: en `duplicate`/`ignored` no hay nada nuevo
+  // que copiar, y Resend reintentaría si respondiéramos 500.
+  if (result.status === 'stored') {
+    const fwd = await forwardReceivedEmail(configs[0].account_id, emailId)
+    if (fwd.status === 'failed') {
+      console.error('[email:inbound] reenvío falló:', fwd.detail)
+    }
   }
 
   return NextResponse.json({ ok: true, result: result.status })
