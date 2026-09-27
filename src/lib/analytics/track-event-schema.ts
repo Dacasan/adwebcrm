@@ -71,6 +71,17 @@ export const attributionInputSchema = z.object({
       gad_source: z.string().optional(),
     })
     .optional(),
+  // Google Ads ad-level (tracking template del anunciante). Cotas max(): es
+  // un endpoint público y el attribution JSONB no debe ser un vertedero.
+  ad: z
+    .object({
+      matchtype: z.string().max(8).optional(),      // e | p | b | a
+      campaign_id: z.string().max(64).optional(),   // {campaignid}
+      ad_group_id: z.string().max(64).optional(),   // {adgroupid}
+      ad_id: z.string().max(64).optional(),         // {creative}
+      location: z.string().max(128).optional(),     // {_location}
+    })
+    .optional(),
   channel: z.string().optional(),
   medium: z.string().optional(),
   landing_slug: z.string().optional(),

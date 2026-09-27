@@ -120,6 +120,16 @@ export function fillHiddenInputs(form: HTMLFormElement, attr: Attribution): void
   // silencio — no error, no warning.
   set("fbc", attr.fbc); set("fbp", attr.fbp);
   set("referrer", attr.referrer);
+  // Google Ads ad-level (tracking template a nivel de cuenta). Prefijo
+  // `gads_` a propósito: un name genérico como `location` podría chocar con
+  // un campo visible futuro del formulario, y set() sobrescribe en silencio
+  // (la misma familia de bug documentada arriba).
+  const ad = attr.ad ?? {};
+  set("gads_matchtype", ad.matchtype);
+  set("gads_campaign_id", ad.campaign_id);
+  set("gads_ad_group_id", ad.ad_group_id);
+  set("gads_ad_id", ad.ad_id);
+  set("gads_location", ad.location);
 }
 
 /** Init idempotente: captura DOM → persiste → rellena forms → dataLayer page_view */
@@ -139,7 +149,7 @@ export function initAttribution(): void {
     fbp: readCookie("_fbp"),
   });
   // persiste campos individuales (mirror) + cookie compuesta
-  setCookieMirror({ ...attr.utm, ...attr.click_ids });
+  setCookieMirror({ ...attr.utm, ...attr.click_ids, ...attr.ad });
   writeAttrCookie(attr);
   utmSetItem("ref_code", attr.ref_code!);
   // hidden inputs ya presentes en el DOM

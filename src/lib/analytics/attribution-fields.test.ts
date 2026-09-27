@@ -82,10 +82,11 @@ describe('attributionFieldValues', () => {
       channel: 'x',
       utm: { source: 'a', medium: 'b', campaign: 'c', term: 'd', content: 'e' },
       click_ids: { gclid: 'g' },
+      ad: { matchtype: 'e', campaign_id: '1', ad_group_id: '2', ad_id: '3', location: 'L' },
       landing_slug: '/l/',
     });
     for (const k of Object.keys(out)) expect(keys.has(k as never)).toBe(true);
-    // Los ocho campos se llenan cuando la atribución viene completa.
+    // Todos los campos proyectados se llenan cuando la atribución viene completa.
     expect(Object.keys(out)).toHaveLength(ATTRIBUTION_FIELDS.length);
   });
 });

@@ -24,7 +24,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Attribution } from './attribution';
 
 /**
- * Los ocho campos que proyectan la atribución, en el orden en que se siembran.
+ * Los trece campos que proyectan la atribución, en el orden en que se siembran.
  *
  * `key` es interno (nunca se muestra); `field_name` es lo que ve el usuario en
  * la ficha, en el filtro de contactos y en el selector de audiencia.
@@ -38,6 +38,14 @@ export const ATTRIBUTION_FIELDS = [
   { key: 'term', field_name: 'Term' },
   { key: 'landing', field_name: 'Landing' },
   { key: 'click_id', field_name: 'Click ID' },
+  // Google Ads ad-level — dimensión de la puja que trajo el lead
+  // (tracking template a nivel de cuenta). `Ad Location` y no `Location`
+  // para no solapar nominalmente con la geo City/State/Country.
+  { key: 'matchtype', field_name: 'Match Type' },
+  { key: 'campaign_id', field_name: 'Campaign ID' },
+  { key: 'ad_group_id', field_name: 'Ad Group ID' },
+  { key: 'ad_id', field_name: 'Ad ID' },
+  { key: 'ad_location', field_name: 'Ad Location' },
 ] as const;
 
 export type AttributionFieldKey = (typeof ATTRIBUTION_FIELDS)[number]['key'];
@@ -96,6 +104,12 @@ export function attributionFieldValues(
     ([, v]) => typeof v === 'string' && v.trim() !== ''
   );
   if (clickEntry) out.click_id = `${clickEntry[0]}:${clickEntry[1]}`;
+
+  if (attr.ad?.matchtype) out.matchtype = attr.ad.matchtype;
+  if (attr.ad?.campaign_id) out.campaign_id = attr.ad.campaign_id;
+  if (attr.ad?.ad_group_id) out.ad_group_id = attr.ad.ad_group_id;
+  if (attr.ad?.ad_id) out.ad_id = attr.ad.ad_id;
+  if (attr.ad?.location) out.ad_location = attr.ad.location;
 
   return out;
 }
@@ -160,7 +174,7 @@ async function ensureCustomFieldsByName(
 }
 
 /**
- * Siembra los ocho campos de atribución que falten y devuelve
+ * Siembra los trece campos de atribución que falten y devuelve
  * `key → custom_field_id`.
  */
 export async function ensureAttributionFields(

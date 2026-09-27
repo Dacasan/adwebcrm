@@ -13,6 +13,25 @@ export interface ClickIds {
   ctwa_clid?: string;  // SOLO server-side: llega en el webhook de WhatsApp (referral del 1er mensaje), no en el DOM
 }
 
+/**
+ * Parámetros ad-level de Google Ads, capturados por el tracking template a
+ * nivel de cuenta (los manda el anunciante en su template ValueTrack; el
+ * gclid NO va aquí — vive en click_ids porque es lo que consume la entrega
+ * de conversiones).
+ *
+ * Valores de {matchtype}: "e" exact · "p" phrase · "b" broad · "a" AI Max.
+ * {campaignid}/{adgroupid}/{creative} son IDs numéricos como string.
+ * {network} y {keyword} ya viajan por utm (utm_medium/utm_term).
+ */
+export interface AdParams {
+  matchtype?: string;
+  campaign_id?: string;   // {campaignid}
+  ad_group_id?: string;   // {adgroupid}
+  ad_id?: string;         // {creative}
+  location?: string;      // {_location} — custom param del anunciante
+}
+
+
 export interface Attribution {
   utm: { source?: string; medium?: string; campaign?: string; term?: string; content?: string };
   click_ids: ClickIds;
@@ -34,26 +53,61 @@ export interface Attribution {
   // guarda el referrer crudo en page_view.payload; se persiste el dominio
   // en la atribución para reporting de adquisición.
   referrer?: string;   // hostname, ej. "google.com"
+  // Google Ads ad-level: dimensión de la puja que trajo la visita. Solo se
+  // adjunta cuando la URL la trae — nunca se emite vacío (ver buildAttribution).
+  ad?: AdParams;
 }
 
 // 13 campos leídos del query string
 const URL_FIELDS = ["utm_source","utm_medium","utm_campaign","utm_term","utm_content",
   "gclid","gbraid","wbraid","fbclid","msclkid","ttclid","li_fat_id","gad_source"] as const;
 
+// 5 campos ad-level del tracking template (van a Attribution.ad, NO a
+// click_ids: son dimensión de reporting, no identificadores de conversión)
+const AD_FIELDS = ["matchtype","campaign_id","ad_group_id","ad_id","location"] as const;
+
+/**
+ * Normaliza un valor del query string a `undefined` si no aporta nada.
+ *
+ * La doc de ValueTrack (support.google.com/google-ads/answer/2375447) y las
+ * reglas de expansión de URLs (developers.google.com, "Serving URL Expansion
+ * Rules" §3) fijan el contrato: un parámetro o custom parameter que no se
+ * puede resolver se expande a STRING VACÍA. Los vacíos ya los salta el `!v`
+ * del loop. Los dos casos que sí hay que limpiar:
+ *   · "/"  — utm_content={_adgroup}/{_adname} con AMBOS sin definir: dos
+ *            vacíos unidos por la barra del template no son un valor.
+ *   · {…}  — defensa: si alguna ruta dejara el placeholder literal sin
+ *            expandir, guardarlo sería inventar un valor que no existe.
+ * Un valor parcialmente expandido ("implantes-costo/") SÍ se guarda: la
+ * parte que llegó es dato real.
+ */
+function cleanParam(raw: string): string | undefined {
+  const t = raw.trim();
+  if (!t || t === "/" || /^\{.*\}$/.test(t)) return undefined;
+  return t;
+}
+
 /** 1. Captura del query string — el DOM es la fuente de verdad */
 export function parseUrlParams(search: string): Partial<Attribution> {
   const p = new URLSearchParams(search);
   const utm: Attribution["utm"] = {};
   const click_ids: ClickIds = {};
+  const ad: AdParams = {};
   for (const f of URL_FIELDS) {
-    const v = p.get(f);
+    const v = cleanParam(p.get(f) ?? "");
     if (!v) continue;
     if (f.startsWith("utm_")) utm[f.replace("utm_", "") as keyof typeof utm] = v;
     else click_ids[f as keyof ClickIds] = v;
   }
+  for (const f of AD_FIELDS) {
+    const v = cleanParam(p.get(f) ?? "");
+    if (!v) continue;
+    ad[f as keyof AdParams] = v;
+  }
   const out: Partial<Attribution> = {};
   if (Object.keys(utm).length) out.utm = utm;
   if (Object.keys(click_ids).length) out.click_ids = click_ids;
+  if (Object.keys(ad).length) out.ad = ad;
   return out;
 }
 
@@ -111,6 +165,9 @@ export function buildAttribution(input: {
     fbc: input.fbc ?? input.existing?.fbc,
     fbp: input.fbp ?? input.existing?.fbp,
     referrer: referrerDomain(input.referrer) ?? input.existing?.referrer,
+    // ad-level SOLO si la URL lo trae: la salida sin ads queda byte-idéntica
+    // a la de antes de este campo (los tests estrictos no se mueven).
+    ...(url.ad ? { ad: url.ad } : {}),
   };
 }
 
