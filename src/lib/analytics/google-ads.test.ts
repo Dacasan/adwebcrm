@@ -143,6 +143,17 @@ describe('google-ads — Data Manager API adapter', () => {
     }
   })
 
+  it('resolveConversionActionId — lead cae al default (su "menos valor" vive en la action de Google Ads, no aquí)', () => {
+    const creds = { customerId: '1234567890', conversionActionId: '987654321', oauthToken: 'tok' }
+    expect(resolveConversionActionId('lead', creds)).toBe('987654321')
+    process.env.GOOGLE_ADS_CONVERSION_ACTION_LEAD = '000'
+    try {
+      expect(resolveConversionActionId('lead', creds)).toBe('000')
+    } finally {
+      delete process.env.GOOGLE_ADS_CONVERSION_ACTION_LEAD
+    }
+  })
+
   it('sendOfflineConversion usa la conversion action de la etapa en el payload', async () => {
     const originalFetch = globalThis.fetch
     let captured: { body: { destinations: Array<{ productDestinationId: string }> } } | null = null

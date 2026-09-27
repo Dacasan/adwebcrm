@@ -47,6 +47,7 @@ export interface GoogleAdsCreds {
 
 export interface GoogleOfflineConversionInput {
   event_name:
+    | 'lead'
     | 'qualified_lead'
     | 'better_lead'
     | 'appointment_booked'
@@ -86,6 +87,7 @@ export function loadGoogleAdsCreds(): GoogleAdsCreds | null {
  * que los tests y la UI de diagnóstico sigan viendo el shape plano.
  */
 const STAGE_ACTION_ENV: Record<string, string> = {
+  lead: 'GOOGLE_ADS_CONVERSION_ACTION_LEAD',
   qualified_lead: 'GOOGLE_ADS_CONVERSION_ACTION_QUALIFIED',
   better_lead: 'GOOGLE_ADS_CONVERSION_ACTION_BETTER',
   appointment_booked: 'GOOGLE_ADS_CONVERSION_ACTION_BOOKED',
