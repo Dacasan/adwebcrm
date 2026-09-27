@@ -47,8 +47,8 @@ export interface GoogleAdsCreds {
 
 export interface GoogleOfflineConversionInput {
   event_name:
-    | 'lead'
     | 'qualified_lead'
+    | 'better_lead'
     | 'appointment_booked'
     | 'appointment_showed'
     | 'deal_won'
@@ -68,6 +68,39 @@ export function loadGoogleAdsCreds(): GoogleAdsCreds | null {
   const oauthToken = process.env.GOOGLE_ADS_OAUTH_TOKEN
   if (!customerId || !conversionActionId || !oauthToken) return null
   return { customerId, conversionActionId, oauthToken }
+}
+
+/**
+ * Resolución de conversion action POR ETAPA del funnel.
+ *
+ * GOOGLE_ADS_CONVERSION_ACTION_ID sigue siendo el destino por defecto
+ * (retrocompatible: una sola env configura todo). Las envs por etapa son
+ * OPCIONALES y, si existen, mandan para su evento: así cada etapa del
+ * funnel (Good/Better/Booked/Showed/Won) cuenta en SU conversion action de
+ * Google Ads y las pujas optimizan hacia la etapa que se les asigna como
+ * primary. `purchase` comparte la env de deal_won (mismo hecho de negocio).
+ *
+ * Formatos verificados contra el propio .env.local.example del repo:
+ * customer sin guiones, action ID numérico, token ya29.* con scope
+ * datamanager. La resolución ocurre en el envío (no al cargar creds) para
+ * que los tests y la UI de diagnóstico sigan viendo el shape plano.
+ */
+const STAGE_ACTION_ENV: Record<string, string> = {
+  qualified_lead: 'GOOGLE_ADS_CONVERSION_ACTION_QUALIFIED',
+  better_lead: 'GOOGLE_ADS_CONVERSION_ACTION_BETTER',
+  appointment_booked: 'GOOGLE_ADS_CONVERSION_ACTION_BOOKED',
+  appointment_showed: 'GOOGLE_ADS_CONVERSION_ACTION_SHOWED',
+  deal_won: 'GOOGLE_ADS_CONVERSION_ACTION_WON',
+  purchase: 'GOOGLE_ADS_CONVERSION_ACTION_WON',
+}
+
+export function resolveConversionActionId(
+  eventName: string,
+  creds: GoogleAdsCreds
+): string {
+  const envName = STAGE_ACTION_ENV[eventName]
+  const perStage = envName ? process.env[envName] : undefined
+  return perStage || creds.conversionActionId
 }
 
 /** Normaliza un email para hashing: minúsculas y sin espacios. */
@@ -135,7 +168,7 @@ export async function sendOfflineConversion(
           accountType: 'GOOGLE_ADS',
           accountId: creds.customerId,
         },
-        productDestinationId: creds.conversionActionId,
+        productDestinationId: resolveConversionActionId(input.event_name, creds),
       },
     ],
     events: [

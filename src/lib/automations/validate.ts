@@ -136,14 +136,16 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       }
       break
     case 'emit_conversion': {
-      // MVP Meta CAPI: el único tipo emitible es 'qualified_lead' — es el
-      // que está en el catálogo de `_conversion_enqueue` y mapeado a
-      // QualifiedLead (PLAN §2: no meter 'good_lead' en ningún sitio).
+      // Funnel por tags (2026-09-27): 'qualified_lead' (Good Lead) y
+      // 'better_lead' (Better Lead) son los tipos emitibles por tag_added.
+      // Ambos están en el catálogo de `_conversion_enqueue` y mapeados en
+      // las dos plataformas. appointment_* lo emite el módulo de citas y
+      // deal_won la RPC de transición — no por tag.
       const ev = c.event_name
-      if (ev !== 'qualified_lead') {
+      if (ev !== 'qualified_lead' && ev !== 'better_lead') {
         issues.push({
           path: `${path}.event_name`,
-          message: 'only qualified_lead is supported',
+          message: 'only qualified_lead and better_lead are supported',
         })
       }
       if (c.value !== undefined && c.value !== null && typeof c.value !== 'number') {

@@ -176,7 +176,7 @@ describe('resolveFbc vía deliverRow — síntesis de fbc desde fbclid (DEF-6)',
         payload: {
           ...(makeRow().payload as object),
           platform: 'meta_capi',
-          event_name: 'lead',
+          event_name: 'qualified_lead', // 'lead' ya no viaja (funnel 2026-09-27)
           attribution: { click_ids: { fbclid: 'AbC123' } },
         },
       }),
@@ -246,7 +246,7 @@ describe('enriquecimiento user_data (DEF-2/DEF-3, Fase 3)', () => {
         payload: {
           ...(makeRow().payload as object),
           platform: 'meta_capi',
-          event_name: 'lead',
+          event_name: 'qualified_lead', // 'lead' ya no viaja (funnel 2026-09-27)
           attribution: { click_ids: { fbclid: 'AbC123' } },
         },
       }),

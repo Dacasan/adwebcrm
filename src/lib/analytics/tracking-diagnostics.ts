@@ -145,7 +145,7 @@ export function computeTrackingDiagnostics(
   // 5) events_without_ip — eventos de conversión sin ip: sin
   //    client_ip_address ni geolocalización (DEF-3).
   const convEvents = events.filter((e) =>
-    ['lead', 'qualified_lead', 'appointment_booked', 'appointment_showed', 'deal_won', 'purchase'].includes(
+    ['lead', 'qualified_lead', 'better_lead', 'appointment_booked', 'appointment_showed', 'deal_won', 'purchase'].includes(
       e.event_type
     )
   )

@@ -39,6 +39,7 @@ export interface WebsiteConversionEventInput {
   event_name:
     | 'Lead'
     | 'QualifiedLead'
+    | 'BetterLead'
     | 'AppointmentBooked'
     | 'AppointmentShowed'
     | 'Purchase' // deal_won == purchase

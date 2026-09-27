@@ -6,6 +6,7 @@ import {
   normalizeEmail,
   normalizePhone,
   pickClickId,
+  resolveConversionActionId,
   sendOfflineConversion,
   sha256Hex,
 } from './google-ads'
@@ -106,12 +107,64 @@ describe('google-ads — Data Manager API adapter', () => {
       new Response('{"error":"bad_request"}', { status: 400 })) as typeof fetch
     try {
       const res = await sendOfflineConversion(
-        { event_name: 'lead', event_id: 'lead_x', event_time: Date.now(), click_ids: {} },
+        { event_name: 'qualified_lead', event_id: 'lead_x', event_time: Date.now(), click_ids: {} },
         { customerId: '1', conversionActionId: '2', oauthToken: 't' }
       )
       expect(res.ok).toBe(false)
       expect(res.reason).toContain('400')
     } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('resolveConversionActionId — sin env por etapa cae al destino por defecto (retrocompatible)', () => {
+    const creds = { customerId: '1234567890', conversionActionId: '987654321', oauthToken: 'tok' }
+    for (const ev of ['qualified_lead', 'better_lead', 'appointment_booked', 'appointment_showed', 'deal_won', 'purchase'] as const) {
+      expect(resolveConversionActionId(ev, creds)).toBe('987654321')
+    }
+  })
+
+  it('resolveConversionActionId — la env por etapa manda para SU etapa y no para las demás', () => {
+    const creds = { customerId: '1234567890', conversionActionId: '987654321', oauthToken: 'tok' }
+    process.env.GOOGLE_ADS_CONVERSION_ACTION_QUALIFIED = '111'
+    process.env.GOOGLE_ADS_CONVERSION_ACTION_SHOWED = '555'
+    process.env.GOOGLE_ADS_CONVERSION_ACTION_WON = '999'
+    try {
+      expect(resolveConversionActionId('qualified_lead', creds)).toBe('111')
+      expect(resolveConversionActionId('better_lead', creds)).toBe('987654321') // sin env → default
+      expect(resolveConversionActionId('appointment_booked', creds)).toBe('987654321')
+      expect(resolveConversionActionId('appointment_showed', creds)).toBe('555')
+      expect(resolveConversionActionId('deal_won', creds)).toBe('999')
+      expect(resolveConversionActionId('purchase', creds)).toBe('999') // comparte la de deal_won
+    } finally {
+      delete process.env.GOOGLE_ADS_CONVERSION_ACTION_QUALIFIED
+      delete process.env.GOOGLE_ADS_CONVERSION_ACTION_SHOWED
+      delete process.env.GOOGLE_ADS_CONVERSION_ACTION_WON
+    }
+  })
+
+  it('sendOfflineConversion usa la conversion action de la etapa en el payload', async () => {
+    const originalFetch = globalThis.fetch
+    let captured: { body: { destinations: Array<{ productDestinationId: string }> } } | null = null
+    globalThis.fetch = (async (_url: unknown, init?: { headers?: Record<string, string>; body?: string }) => {
+      captured = { body: JSON.parse(init?.body ?? '{}') }
+      return new Response(JSON.stringify({ requestId: 'req-2' }), { status: 200 })
+    }) as typeof fetch
+    process.env.GOOGLE_ADS_CONVERSION_ACTION_SHOWED = '555'
+    try {
+      const res = await sendOfflineConversion(
+        {
+          event_name: 'appointment_showed',
+          event_id: 'appt_showed_a1',
+          event_time: Date.now(),
+          click_ids: { gclid: 'Cj0KCQ' },
+        },
+        { customerId: '1234567890', conversionActionId: '987654321', oauthToken: 'tok' }
+      )
+      expect(res.ok).toBe(true)
+      expect(captured!.body.destinations[0].productDestinationId).toBe('555')
+    } finally {
+      delete process.env.GOOGLE_ADS_CONVERSION_ACTION_SHOWED
       globalThis.fetch = originalFetch
     }
   })

@@ -31,9 +31,18 @@ import type { MetaUserDataInput } from '@/lib/analytics/meta-user-data'
 // plataformas). Viven aquí, no en track-event-schema: ese enum cubre solo
 // los 6 tipos de la API pública anónima; los de conversión los emiten
 // RPC/trigger/server con service role.
+//
+// Funnel del cliente (All-on-4, decidido 2026-09-27): el formulario NO es
+// la conversión a optimizar — 'lead' se registra en tracking_events para
+// reporting y funnel del dashboard, pero el trigger 0XX ya NO lo encola a
+// plataformas. Las conversiones entregadas son las etapas comerciales:
+// qualified_lead (Good Lead, tag) → better_lead (Better Lead, tag,
+// dispuesto a viajar) → appointment_booked (compró boleto) →
+// appointment_showed (llegó a la clínica) → deal_won (cerrado).
 export type ConversionEventName =
   | 'lead'
   | 'qualified_lead'
+  | 'better_lead'
   | 'appointment_booked'
   | 'appointment_showed'
   | 'deal_won'
@@ -284,6 +293,15 @@ async function deliverRow(row: DeliveryRow): Promise<boolean> {
   const attr = payload.attribution
   const clickIds = attr?.click_ids
 
+  // 'lead' (el form_submit) NO es conversión de plataforma por decisión de
+  // funnel (2026-09-27): se registra en tracking_events para reporting y
+  // el funnel del dashboard, pero el trigger ya no lo encola — las pujas
+  // se optimizan con las etapas comerciales (Good/Better/Booked/Showed).
+  // Este guard consume en silencio las filas históricas 'lead' que
+  // quedaran pending de antes del cambio: no se envían, no se marcan
+  // como fallo.
+  if (payload.event_name === 'lead') return true
+
   // El event_id determinístico es el dedup: Google lo usa como
   // transactionId y Meta como event_id (navegador + servidor).
   const eventTime = payload.created_at ? Date.parse(payload.created_at) : Date.now()
@@ -342,16 +360,23 @@ async function deliverRow(row: DeliveryRow): Promise<boolean> {
   return res.ok
 }
 
-/** Mapea nuestro event_type → nombre de evento Google (purchase para deal_won). */
-function mapEventName(name: ConversionEventName): ConversionEventName {
+/** Mapea nuestro event_type → nombre de evento Google (purchase para deal_won).
+ *  'lead' ya no es entregable: el guard de deliverRow lo consume antes de
+ *  llegar aquí (queda el tipo Exclude para que el compilador lo vigile). */
+type DeliverableEventName = Exclude<ConversionEventName, 'lead'>
+function mapEventName(name: DeliverableEventName): DeliverableEventName {
   // deal_won == purchase en WACRM: un trato ganado ES la compra.
   if (name === 'deal_won') return 'deal_won'
   return name
 }
 
-/** Mapea nuestro event_type → nombre de evento Meta (PascalCase). */
-function mapMetaEventName(name: ConversionEventName): 'Lead' | 'QualifiedLead' | 'AppointmentBooked' | 'AppointmentShowed' | 'Purchase' {
+/** Mapea nuestro event_type → nombre de evento Meta (PascalCase).
+ *  better_lead no es un evento estándar de Meta: viaja como evento custom
+ *  'BetterLead' (la CAPI acepta nombres propios para eventos web). */
+function mapMetaEventName(name: ConversionEventName): 'Lead' | 'QualifiedLead' | 'BetterLead' | 'AppointmentBooked' | 'AppointmentShowed' | 'Purchase' {
   switch (name) {
+    case 'better_lead':
+      return 'BetterLead'
     case 'lead':
       return 'Lead'
     case 'qualified_lead':

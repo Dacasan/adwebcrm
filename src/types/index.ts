@@ -715,9 +715,10 @@ export type AutomationStepType =
  * El paso NUNCA llama a la CAPI directamente.
  */
 export interface EmitConversionStepConfig {
-  /** Tipo del catálogo canónico. MVP: solo 'qualified_lead' (el trigger
-   *  no encola 'good_lead' — PLAN §2). */
-  event_name: 'qualified_lead'
+  /** Tipo del catálogo canónico. Etapas marcadas por tag del funnel:
+   *  'qualified_lead' (Good Lead) y 'better_lead' (Better Lead — el
+   *  trigger 0XX los encola ambos). */
+  event_name: 'qualified_lead' | 'better_lead'
   value?: number
   currency?: string
 }
