@@ -40,6 +40,38 @@ Cuatro reglas que salen de ahí y que aquí se repiten porque cuestan dinero:
 **pnpm siempre.** Nunca npm ni bun. Antes de dar un cambio por bueno:
 `pnpm typecheck && pnpm lint && pnpm test`.
 
+**Medición y conversiones (2026-09-28).** El bucle completo vive en
+`src/lib/analytics/` + `src/lib/conversions/` y está documentado en
+[Attribution](https://docs.adwebcrm.com/crm/attribution/) — no lo dupliques,
+pero estas fronteras cuestan dinero:
+
+- **El contrato de hidden inputs es two-PR:** `ContactFields.astro` (web-kit)
+  y `fillHiddenInputs` en `god.ts` van SIEMPRE juntos. Los campos ad-level
+  de Google Ads usan prefijo `gads_` (matchtype/campaign_id/ad_group_id/
+  ad_id/location → `attribution.ad`). Añadir de un solo lado = pérdida
+  silenciosa de datos.
+- **Funnel de conversiones:** todas las etapas se entregan a ambas
+  plataformas (`lead` con valor menor/secondary, `qualified_lead`,
+  `better_lead`, `appointment_booked`, `appointment_showed`, `deal_won`).
+  `lead` y `better_lead` nacen por tag del comercial vía acción
+  `emit_conversion` (event_id determinístico, dedup por UNIQUE). El trigger
+  `_conversion_enqueue` (migración 081) encola; `/api/conversions/cron`
+  entrega.
+- **Una conversion action por etapa:** `resolveConversionActionId` mapea
+  `event_name → GOOGLE_ADS_CONVERSION_ACTION_<LEAD|QUALIFIED|BETTER|BOOKED|
+  SHOWED|WON>` con fallback al env único. Los IDs son el número, nunca
+  `AW-…/label`.
+- **Hashes NO compartibles:** Google Data Manager = SHA-256 HEX MAYÚSCULAS,
+  teléfono E.164 CON `+` (`user-hash.ts`); Meta CAPI = hex minúsculas,
+  teléfono solo dígitos (`meta-user-data.ts`). Los tests usan los vectores
+  oficiales de Meta — no "unifiques" los normalizadores.
+- **Creds CAPI:** env primero, fallback `tracking_config` (token cifrado
+  AES-256-GCM). Graph API v25.0. `deal_won` → `action_source:
+  system_generated` (nace en el CRM); el resto → `website`.
+- **Sin integración de conversión nueva debe tocar `conversion_deliveries`**
+  — esa tabla ya no existe (070): la cola es `message_queue` channel=
+  'conversion'.
+
 Si cambias el comportamiento que la documentación describe, abre el cambio
 correspondiente en `sitio-docs` a la vez. Cada página lleva un bloque
 **Verify this page** con los comandos exactos que la comprueban contra este
