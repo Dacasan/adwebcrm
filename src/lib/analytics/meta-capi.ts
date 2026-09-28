@@ -20,10 +20,21 @@
 // Credenciales por env (multi-account: futura tabla analytics_config):
 //   META_CAPI_DATASET_ID   — ID del dataset (Pixel) de Meta
 //   META_CAPI_ACCESS_TOKEN — token de acceso con permiso de reporting
-// Sin credenciales → no-op con log (fail-open: nunca rompe el webhook).
+//   META_CAPI_TEST_EVENT_CODE — opcional: Events Manager "Eventos de prueba"
+// Fallback a tracking_config (Settings → Tracking, token cifrado) si no
+// hay envs. Sin ninguna de las dos → no-op con log (fail-open: nunca
+// rompe el webhook).
 // ============================================================
 
-const GRAPH_VERSION = 'v21.0'
+import { supabaseAdmin } from '@/lib/automations/admin-client'
+import { decrypt } from '@/lib/whatsapp/encryption'
+
+const GRAPH_VERSION = 'v25.0'
+// v21.0→v25.0 (2026-09-28): v25.0 es la versión vigente (release feb 2026).
+// El payload del endpoint /<dataset>/events no cambió entre v21 y v25 —
+// los deprecates de v22-v25 afectan Instagram Insights/Pages/métricas, no
+// CAPI (Graph API changelog, developers.facebook.com). v24 muere 2026-10-06;
+// v21 expira ~2027 bajo la regla de 2 años tras el release siguiente.
 
 /** Evento CTWA (Click-to-WhatsApp) — action_source business_messaging. */
 export interface ConversionEventInput {
@@ -51,6 +62,10 @@ export interface WebsiteConversionEventInput {
   fbp?: string
   user_data?: MetaUserDataInput
   event_source_url?: string
+  /** Default 'website'. 'system_generated' para eventos nacidos en el
+   *  CRM/backend (deal_won): la vía recomendada tras la retirada de la
+   *  Offline Conversions API (mayo 2025). */
+  action_source?: 'website' | 'system_generated'
   /**
    * Pestaña "Eventos de prueba" de Events Manager (DEF-4). Va en la RAÍZ
    * del cuerpo, hermano de `data` — nunca dentro del evento.
@@ -93,14 +108,56 @@ export async function buildMetaUserData(
 export interface CapiCreds {
   datasetId: string
   accessToken: string
+  /** Pestaña "Eventos de prueba" de Events Manager. Si viaja, Meta NO
+   *  registra los eventos como reales — QUITARLO tras probar. */
+  testEventCode?: string
 }
 
-/** Lee las credenciales CAPI del entorno. null si no están configuradas. */
-export function loadCapiCreds(): CapiCreds | null {
-  const datasetId = process.env.META_CAPI_DATASET_ID
-  const accessToken = process.env.META_CAPI_ACCESS_TOKEN
-  if (!datasetId || !accessToken) return null
-  return { datasetId, accessToken }
+/**
+ * Lee las credenciales CAPI: primero del entorno, luego de tracking_config
+ * (Settings → Tracking, token guardado cifrado con AES-256-GCM desde la
+ * 079). Fase T2 cerrada para CAPI: configurar en la UI YA activa el envío
+ * cuando no hay envs — el env manda si existe (misma precedencia que
+ * crm-url.ts). Sin ninguna de las dos → null (fail-open).
+ *
+ * Async porque el fallback lee DB. Los tests con env no la tocan.
+ * Account: LANDING_ACCOUNT_ID si está definida; si no, la única fila
+ * (despliegue single-tenant de una marca).
+ */
+export async function loadCapiCreds(): Promise<CapiCreds | null> {
+  const envDataset = process.env.META_CAPI_DATASET_ID
+  const envToken = process.env.META_CAPI_ACCESS_TOKEN
+  if (envDataset && envToken) {
+    return {
+      datasetId: envDataset,
+      accessToken: envToken,
+      ...(process.env.META_CAPI_TEST_EVENT_CODE
+        ? { testEventCode: process.env.META_CAPI_TEST_EVENT_CODE }
+        : {}),
+    }
+  }
+  try {
+    const db = supabaseAdmin()
+    let query = db
+      .from('tracking_config')
+      .select('meta_dataset_id, meta_access_token_encrypted, meta_test_event_code')
+      .not('meta_access_token_encrypted', 'is', null)
+      .limit(1)
+    if (process.env.LANDING_ACCOUNT_ID) {
+      query = query.eq('account_id', process.env.LANDING_ACCOUNT_ID)
+    }
+    const { data, error } = await query.maybeSingle()
+    if (error || !data?.meta_dataset_id || !data.meta_access_token_encrypted) return null
+    return {
+      datasetId: data.meta_dataset_id,
+      accessToken: decrypt(data.meta_access_token_encrypted),
+      ...(data.meta_test_event_code
+        ? { testEventCode: data.meta_test_event_code as string }
+        : {}),
+    }
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -191,7 +248,7 @@ export async function dispatchWebsiteConversion(
             event_name: input.event_name,
             event_time: Math.floor(input.event_time / 1000),
             event_id: input.event_id,
-            action_source: 'website',
+            action_source: input.action_source ?? 'website',
             ...(Object.keys(combinedUserData).length
               ? { user_data: combinedUserData }
               : {}),

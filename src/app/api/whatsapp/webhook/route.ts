@@ -659,7 +659,7 @@ async function captureCtwaAttribution(
 
     // Reportar a la Meta Conversions API (Item 16 — CAPI). Fail-open: si
     // no hay credenciales o falla, el lead ya está atribuido localmente.
-    const creds = loadCapiCreds()
+    const creds = await loadCapiCreds()
     if (creds) {
       const { ok, reason } = await dispatchConversion(
         {

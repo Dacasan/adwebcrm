@@ -93,7 +93,7 @@ async function claimDue(): Promise<DeliveryRow[]> {
 
   const platforms: DeliveryRow['payload']['platform'][] = []
   if (loadGoogleAdsCreds()) platforms.push('google_ads')
-  if (loadCapiCreds()) platforms.push('meta_capi')
+  if (await loadCapiCreds()) platforms.push('meta_capi')
   if (platforms.length === 0) return [] // sin creds → no se reclama nada
 
   const { data: rows } = await db
@@ -329,7 +329,7 @@ async function deliverRow(row: DeliveryRow): Promise<boolean> {
   }
 
   // meta_capi
-  const creds = loadCapiCreds()
+  const creds = await loadCapiCreds()
   if (!creds) return true // no-op defensivo (claimDue ya filtró por plataforma)
   const contact = await loadContactUserData(row.account_id, payload.contact_id as string)
   const origin = await loadOriginEvent(payload.conversion_event_id)
@@ -343,6 +343,18 @@ async function deliverRow(row: DeliveryRow): Promise<boolean> {
       fbc: resolveFbc(attr ?? {}, eventTime),
       fbp: attr?.fbp,
       event_source_url: buildEventSourceUrl(origin?.landingSlug),
+      // deal_won nace en el CRM (cierre comercial), no en la web:
+      // system_generated es la vía canónica tras la retirada de la
+      // Offline Conversions API (mayo 2025). El resto son etapas del
+      // funnel web → 'website' (default).
+      action_source:
+        payload.event_name === 'deal_won' || payload.event_name === 'purchase'
+          ? 'system_generated'
+          : undefined,
+      // DEF-4: si hay código de eventos de prueba configurado (env o
+      // Settings → Tracking), Meta NO registra estos eventos como
+      // reales — quitándolo, todo sale a producción.
+      test_event_code: creds.testEventCode,
       user_data: {
         ...contact,
         clientIpAddress: origin?.ip,

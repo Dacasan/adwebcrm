@@ -153,4 +153,41 @@ describe('meta-capi — dispatchWebsiteConversion (action_source website)', () =
       globalThis.fetch = originalFetch
     }
   })
+
+  it('con testEventCode en creds, test_event_code viaja en la RAÍZ del cuerpo (DEF-4)', async () => {
+    let body!: { test_event_code?: string; data: Array<{ action_source: string }> }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      body = JSON.parse(init?.body ?? '{}')
+      return new Response('{"events_received":1}', { status: 200 })
+    }) as typeof fetch
+    try {
+      await dispatchWebsiteConversion(
+        { event_name: 'Lead', event_id: 'lead_test3', event_time: Date.now(), test_event_code: 'TEST12345' },
+        { datasetId: '1', accessToken: 't' }
+      )
+      expect(body.test_event_code).toBe('TEST12345')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('action_source system_generated explícito se respeta (deal_won vía CRM)', async () => {
+    let body!: { data: Array<{ event_name: string; action_source: string }> }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      body = JSON.parse(init?.body ?? '{}')
+      return new Response('{"events_received":1}', { status: 200 })
+    }) as typeof fetch
+    try {
+      await dispatchWebsiteConversion(
+        { event_name: 'Purchase', event_id: 'deal_won_x', event_time: Date.now(), action_source: 'system_generated', value: 2000, currency: 'USD' },
+        { datasetId: '1', accessToken: 't' }
+      )
+      expect(body.data[0].action_source).toBe('system_generated')
+      expect(body.data[0].event_name).toBe('Purchase')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })
