@@ -82,6 +82,17 @@ vi.mock('@/lib/api/v1/contacts', () => ({
   resolveAuditUserId: vi.fn(async () => 'u-1'),
 }))
 
+vi.mock('@/lib/contacts/tag-events', () => ({
+  addContactTagAndDispatch: vi.fn(async () => ({ added: true, dispatched: true })),
+}))
+
+vi.mock('@/lib/contacts/resolve-import-tags', () => ({
+  resolveImportTagIds: vi.fn(async () => ({
+    tagIdByKey: new Map([['ai agent', 'tag-ai-1']]),
+    skippedNames: [],
+  })),
+}))
+
 vi.mock('@/lib/cors', () => ({
   withCors: (r: Response) => r,
   handlePreflight: () => new Response(null, { status: 204 }),
@@ -105,6 +116,8 @@ vi.mock('@/lib/email/lead-notify', () => ({
 import { POST } from './route'
 import { lookupIpGeo } from '@/lib/analytics/ip-geo'
 import { notifyNewLead } from '@/lib/email/lead-notify'
+import { addContactTagAndDispatch } from '@/lib/contacts/tag-events'
+import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags'
 
 function makeFormSubmitReq(): Request {
   return new Request('http://localhost/api/events', {
@@ -211,6 +224,73 @@ describe('POST /api/events form_submit — geo + señales del servidor', () => {
     // el lead igual se intentó persistir
     expect(
       h.ops.some((o) => o.table === 'tracking_events' && o.type === 'upsert')
+    ).toBe(true)
+  })
+})
+
+// ============================================================
+// Separación de leads de agente (WebMCP). Contrato two-PR:
+// lead-form.ts (kit) añade payload.webmcp_agent=true cuando el submit
+// trae SubmitEvent.agentInvoked; el server separa con tag vía las
+// primitivas del ingest (resolveImportTagIds + addContactTagAndDispatch).
+// ============================================================
+describe('POST /api/events form_submit — tag de agente (WebMCP)', () => {
+  it('un submit con webmcp_agent=true taggea el contacto con AI Agent', async () => {
+    const req = new Request('http://localhost/api/events', {
+      method: 'POST',
+      headers: { 'user-agent': 'UA-Test', 'x-forwarded-for': '8.8.8.8' },
+      body: JSON.stringify({
+        event_id: 'evt-agent01',
+        event_type: 'form_submit',
+        payload: {
+          phone: '+5299812345678',
+          name: 'Juan',
+          email: 'x@y.com',
+          webmcp_agent: true,
+        },
+      }),
+    })
+    const res = await POST(req as never)
+    expect(res.status).toBe(202)
+    expect(resolveImportTagIds).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ accountId: 'acct-1', tagNames: ['AI Agent'] })
+    )
+    expect(addContactTagAndDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: 'acct-1',
+        contactId: 'c-1',
+        tagId: 'tag-ai-1',
+      })
+    )
+  })
+
+  it('un submit HUMANO no taggea (sin flag, ni siquiera se resuelve el tag)', async () => {
+    const res = await POST(makeFormSubmitReq() as never)
+    expect(res.status).toBe(202)
+    expect(addContactTagAndDispatch).not.toHaveBeenCalled()
+    expect(resolveImportTagIds).not.toHaveBeenCalled()
+  })
+
+  it('un tag que RECHAZA no impide el lead (fail-open: 202 + evento insertado)', async () => {
+    vi.mocked(resolveImportTagIds).mockRejectedValueOnce(
+      new Error('tags caídas')
+    )
+    const req = new Request('http://localhost/api/events', {
+      method: 'POST',
+      headers: { 'user-agent': 'UA-Test', 'x-forwarded-for': '8.8.8.8' },
+      body: JSON.stringify({
+        event_id: 'evt-tagfail',
+        event_type: 'form_submit',
+        payload: { phone: '+5299812345678', webmcp_agent: true },
+      }),
+    })
+    const res = await POST(req as never)
+    expect(res.status).toBe(202)
+    expect(
+      h.ops.some(
+        (o) => o.table === 'tracking_events' && o.type === 'upsert'
+      )
     ).toBe(true)
   })
 })

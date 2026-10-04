@@ -25,6 +25,8 @@ import { projectGeoToCustomFields } from '@/lib/analytics/attribution-fields';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
 import { resolveLandingAccountId } from '@/lib/analytics/landing-account';
 import { findOrCreateContact, resolveAuditUserId } from '@/lib/api/v1/contacts';
+import { addContactTagAndDispatch } from '@/lib/contacts/tag-events';
+import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
 import { withCors, handlePreflight } from '@/lib/cors';
 import { notifyNewLead } from '@/lib/email/lead-notify';
 import {
@@ -38,6 +40,9 @@ export function OPTIONS(req: NextRequest) {
   // /api/events; sin esto el navegador bloquea el POST.
   return handlePreflight(req);
 }
+
+/** Nombre del tag para leads rellenados por un agente de IA (WebMCP). */
+const WEBMCP_AGENT_TAG = 'AI Agent';
 
 export async function POST(req: NextRequest) {
   // Rate-limit por IP ANTES de tocar la BD: pincha bots que spamean
@@ -104,6 +109,43 @@ export async function POST(req: NextRequest) {
         // findOrCreateContact la ignora.
         attribution: attribution ?? null,
       });
+
+      // Separación de leads de agente (WebMCP): lead-form.ts añade
+      // `webmcp_agent: true` al payload cuando el submit trae
+      // SubmitEvent.agentInvoked (el form lo rellenó un agente y la
+      // persona confirmó el envío). Primitivas del ingest, CERO funciones
+      // nuevas: resolveImportTagIds (resolve-or-create por nombre, la
+      // MISMA que usa la API pública y el CSV-import) +
+      // addContactTagAndDispatch (escritura idempotente vía
+      // addContactTagIfAbsent + dispatch de tag_added → cualquier
+      // automatización de ese tag sale gratis). Se taggea en CADA envío
+      // marcado; el tag-write es idempotente (contacto repetido no
+      // duplica el join). Fail-open como el geo y el notify: un tag
+      // fallido JAMÁS impide que el lead exista ni tumba el 202.
+      if (payload?.webmcp_agent === true) {
+        try {
+          const { tagIdByKey } = await resolveImportTagIds(admin, {
+            accountId: account_id,
+            userId: auditUserId,
+            tagNames: [WEBMCP_AGENT_TAG],
+            canCreateTags: true,
+          });
+          const tagId = tagIdByKey.get(WEBMCP_AGENT_TAG.toLowerCase());
+          if (tagId) {
+            await addContactTagAndDispatch({
+              db: admin,
+              accountId: account_id,
+              contactId: contact.id,
+              tagId,
+            });
+          }
+        } catch (tagErr) {
+          console.warn(
+            '[api/events] agent tag failed (fail-open):',
+            tagErr instanceof Error ? tagErr.message : tagErr
+          );
+        }
+      }
 
       // Loop de conversiones: el form_submit ES el lead. Se emite el evento
       // canónico `lead` con el contact_id recién resuelto y un event_id
