@@ -57,6 +57,28 @@ function StatusIcon({ status }: { status: Message["status"] }) {
   }
 }
 
+/**
+ * Renderiza el HTML del email entrante en un iframe sandboxed — el mismo
+ * patrón ya probado en step3-email-preview / email-template-editor.
+ *
+ * sandbox SIN allow-scripts ni allow-same-origin: el HTML del remitente no
+ * ejecuta nada ni toca el documento padre. allow-popups permite que los
+ * enlaces del email abran en pestaña nueva (target así lo piden los mails).
+ * Altura fija con scroll interno para no romper el overflow del hilo
+ * (issues #165 / #257: min-w-0 del contenedor es load-bearing).
+ */
+function EmailHtmlView({ html, subject }: { html: string; subject?: string }) {
+  return (
+    <iframe
+      title={subject || "Email"}
+      sandbox="allow-popups allow-popups-to-escape-sandbox"
+      srcDoc={html}
+      loading="lazy"
+      className="h-[480px] w-[600px] max-w-full min-w-0 overflow-hidden rounded-md border bg-white"
+    />
+  );
+}
+
 function MessageContent({
   message,
   t,
@@ -74,12 +96,21 @@ function MessageContent({
   const openMedia = onOpenMedia ? () => onOpenMedia(message.id) : undefined;
 
   switch (message.content_type) {
-    case "text":
+    case "text": {
+      // Email entrante con cuerpo HTML almacenado (migración 078) → render
+      // aislado en iframe. SMS/WhatsApp y emails solo-texto conservan el
+      // render plano exacto de antes.
+      const emailHtml =
+        message.channel === "email" ? message.metadata?.html : undefined;
+      if (emailHtml) {
+        return <EmailHtmlView html={emailHtml} subject={message.metadata?.subject} />;
+      }
       return (
         <p className="whitespace-pre-wrap break-words text-sm">
           {message.content_text}
         </p>
       );
+    }
 
     case "image":
       return (

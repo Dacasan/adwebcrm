@@ -170,7 +170,10 @@
       "whatsapp": "WhatsApp",
       "sms": "SMS",
       "email": "이메일",
-      "ariaLabel": "채널: {channel}"
+      "ariaLabel": "채널: {channel}",
+      "selectorTitle": "답장 채널 선택",
+      "missingPhone": "이 연락처에 전화번호가 없습니다",
+      "missingEmail": "이 연락처에 이메일 주소가 없습니다"
     },
     "conversationList": {
       "searchPlaceholder": "대화 검색...",
@@ -256,7 +259,9 @@
       "smsCounterTitle": "이 세그먼트에 {size}자 중 {remaining}자 남았습니다",
       "smsUnicode": "유니코드",
       "smsUnicodeTitle": "유니코드 문자(이모지·악센트)가 있어 세그먼트당 160자가 아닌 {size}자만 들어갑니다",
-      "smsHint": "SMS: 텍스트만 — 템플릿이나 첨부파일은 사용할 수 없습니다."
+      "smsHint": "SMS: 텍스트만 — 템플릿이나 첨부파일은 사용할 수 없습니다.",
+      "emailPlaceholder": "이메일로 답장…",
+      "emailHint": "이메일: 설정된 Resend 발신자로 전송됩니다."
     },
     "bubble": {
       "photo": "사진",

@@ -210,6 +210,7 @@ export function MessageComposer({
   // WhatsApp: el SMS es texto pelado y el email no pasa por aquí.
   const isWhatsApp = channel === "whatsapp";
   const isSms = channel === "sms";
+  const isEmail = channel === "email";
   const metaFeatures = isWhatsApp;
 
   // La ventana de 24h es un invento de la Cloud API de Meta. El hilo la
@@ -797,7 +798,9 @@ export function MessageComposer({
                   ? t("sessionExpiredPlaceholder")
                   : isSms
                     ? t("smsPlaceholder")
-                    : t("typeMessagePlaceholder")
+                    : isEmail
+                      ? t("emailPlaceholder")
+                      : t("typeMessagePlaceholder")
             }
             disabled={windowExpired || readOnly}
             rows={1}
@@ -831,9 +834,10 @@ export function MessageComposer({
       {!draft && !recording && (
         <div className="mt-1 flex items-start justify-between gap-3 pl-[5.5rem]">
           {/* En SMS el hint explica por qué la barra está pelada (ni
-              plantillas ni adjuntos); en WhatsApp, el atajo de la IA. */}
+              plantillas ni adjuntos); en email, por dónde sale el correo;
+              en WhatsApp, el atajo de la IA. */}
           <p className="text-[10px] text-muted-foreground">
-            {isSms ? t("smsHint") : t("draftHint")}
+            {isSms ? t("smsHint") : isEmail ? t("emailHint") : t("draftHint")}
           </p>
           {/* Con el compositor vacío el contador no dice nada útil, así
               que aparece con la primera letra. Se pone en ámbar en cuanto

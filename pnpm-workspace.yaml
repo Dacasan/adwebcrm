@@ -16,3 +16,10 @@ allowBuilds:
   unrs-resolver: true
   # esbuild — native binary used by build:god (god.js bundle)
   esbuild: true
+
+# HEIF Heist (CVE-2026-84383, GHSA-g89c-p67h-r497): sharp <0.35.4 bundles
+# libheif <1.23.2 — heap overflow decoding HEIF/HEIC/AVIF via next/image.
+# pnpm 11 ignores the npm-style "overrides" in package.json; they live here.
+# https://pnpm.io/cli/audit
+overrides:
+  sharp: "^0.35.4"

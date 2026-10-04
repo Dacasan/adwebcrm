@@ -292,14 +292,27 @@ export function MessageThread({
   }, [messages]);
 
   /**
-   * Solo hay dos rutas de envío manual: la de Meta y la del proveedor de
-   * SMS. Un hilo cuyo último mensaje es un email no tiene ruta propia
-   * (/api/email/send no escribe en `messages` ni vive dentro del hilo),
-   * así que se sigue respondiendo por WhatsApp como hasta ahora — el chip
-   * de la cabecera deja claro por dónde llegó lo último. Por eso todo lo
-   * de Meta se decide con `!isSms` y no con `channel === "whatsapp"`.
+   * Canal de SALIDA: por defecto el del último mensaje (comportamiento de
+   * siempre), pero el agente puede ELEGIRLO desde el selector de la
+   * cabecera (`outgoingSelection`) — responder un email por WhatsApp o un
+   * hilo de WhatsApp por SMS es decisión del agente, no del último
+   * mensaje que entró. La selección lleva el conversation_id incorporado:
+   * al cambiar de hilo la mis-match hace caer al derivado sin efecto
+   * extra (no se arrastra la elección a otra conversación).
    */
-  const isSms = channel === "sms";
+  const [outgoingSelection, setOutgoingSelection] = useState<{
+    convId: string;
+    channel: ThreadChannel;
+  } | null>(null);
+  const outgoing =
+    outgoingSelection && outgoingSelection.convId === conversation?.id
+      ? outgoingSelection.channel
+      : channel;
+  // Los guards "fuera de WhatsApp" se deciden contra el canal ELEGIDO:
+  // respondiendo por SMS a un hilo de WhatsApp, ese envío no usa
+  // plantillas de Meta ni la ventana de 24h.
+  const isSms = outgoing === "sms";
+  const isWhatsApp = outgoing === "whatsapp";
 
   // Ventana de 24h de la Cloud API de Meta.
   //
@@ -310,7 +323,9 @@ export function MessageThread({
   // entrante reabriría la ventana de Meta y le daría al agente un permiso
   // que Meta no le ha dado.
   const sessionInfo = useMemo(() => {
-    if (isSms) return { expired: false, remaining: "" };
+    // La ventana de 24h solo dicta algo cuando la salida es WhatsApp:
+    // SMS y email se envían sin ella.
+    if (!isWhatsApp) return { expired: false, remaining: "" };
     if (!messages.length) return { expired: false, remaining: "" };
 
     // Find last customer message
@@ -336,7 +351,7 @@ export function MessageThread({
         : tTimer("xmRemaining", { minutes: Math.floor(hoursLeft * 60) });
 
     return { expired, remaining };
-  }, [messages, isSms, tTimer]);
+  }, [messages, isWhatsApp, tTimer]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
   // depend on `onMessagesLoaded` — otherwise parent re-renders cause
@@ -552,9 +567,12 @@ export function MessageThread({
 
       const tempId = `temp-${Date.now()}`;
       // La cita ("reply to") es una feature de Meta: el proveedor de SMS
-      // no la transporta, así que en un hilo de SMS ni se manda ni se
+      // no la transporta, así que saliendo por SMS ni se manda ni se
       // pinta en la burbuja optimista (si no, el agente vería una cita
-      // que no existe en el mensaje que le llega al cliente).
+      // que no existe en el mensaje que le llega al cliente). El email SÍ
+      // la guarda (reply_to_message_id es de la fila, no del proveedor):
+      // mientras el SMS pierde la cita, en el email la burbuja la muestra
+      // como el resto — In-Reply-To va aparte, en los headers del envío.
       const quotedId = isSms ? undefined : replyToId;
 
       // Optimistic update — shows the message immediately with "sending" status
@@ -564,11 +582,10 @@ export function MessageThread({
         sender_type: "agent",
         content_type: "text",
         content_text: text,
-        // El canal que va a persistir el servidor, no el derivado: en un
-        // hilo de email la respuesta sale por Meta y la fila aterriza
-        // como 'whatsapp'. Así la burbuja optimista no miente ni hace
+        // El canal que va a persistir el servidor ES el elegido, no un
+        // derivado adivinado: así la burbuja optimista no miente ni hace
         // bailar el canal derivado cuando llega el INSERT real.
-        channel: isSms ? "sms" : "whatsapp",
+        channel: outgoing,
         status: "sending",
         created_at: new Date().toISOString(),
         reply_to_message_id: quotedId,
@@ -582,9 +599,16 @@ export function MessageThread({
         // incomprensible para el agente, o —peor— el cliente que escribió
         // un SMS recibía un WhatsApp para el que no dio consentimiento, y
         // la fila se guardaba con channel='whatsapp' (el default de la
-        // columna) dejando el hilo mentiroso.
+        // columna) dejando el hilo mentiroso. Con el email pasa lo mismo
+        // pero al revés: /api/email/reply es la ruta del hilo (inserta en
+        // messages); /api/email/send es de campañas/automatizaciones y
+        // NUNCA escribe en messages.
         const res = await fetch(
-          isSms ? "/api/sms/send" : "/api/whatsapp/send",
+          isSms
+            ? "/api/sms/send"
+            : outgoing === "email"
+              ? "/api/email/reply"
+              : "/api/whatsapp/send",
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -595,12 +619,17 @@ export function MessageThread({
                     contactId: contact?.id,
                     text,
                   }
-                : {
-                    conversation_id: conversation.id,
-                    message_type: "text",
-                    content_text: text,
-                    reply_to_message_id: quotedId,
-                  },
+                : outgoing === "email"
+                  ? {
+                      conversationId: conversation.id,
+                      text,
+                    }
+                  : {
+                      conversation_id: conversation.id,
+                      message_type: "text",
+                      content_text: text,
+                      reply_to_message_id: quotedId,
+                    },
             ),
           },
         );
@@ -627,18 +656,18 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, contact?.id, isSms, onNewMessage, onUpdateMessage]
+    [conversation, contact?.id, outgoing, isSms, onNewMessage, onUpdateMessage]
   );
 
-  // Media, interactivos y plantillas viajan por Meta: en un hilo de SMS
-  // no hay a dónde mandarlos. El composer ya no los ofrece (le pasamos
-  // `channel` más abajo), pero los tres handlers vuelven a comprobarlo:
-  // un mensaje enviado no se des-envía, así que el cinturón va con los
-  // tirantes.
+  // Media, interactivos y plantillas viajan por Meta: fuera de WhatsApp
+  // (elegido SMS o email) no hay a dónde mandarlos. El composer ya no los
+  // ofrece (le pasamos `channel` más abajo), pero los tres handlers
+  // vuelven a comprobarlo: un mensaje enviado no se des-envía, así que el
+  // cinturón va con los tirantes.
   const handleSendMedia = useCallback(
     async (payload: SendMediaPayload) => {
       if (!conversation) return;
-      if (isSms) {
+      if (!isWhatsApp) {
         // El fichero ya está en el bucket cuando llega aquí, así que el
         // guard barre el objeto huérfano igual que hace el camino de
         // error de abajo.
@@ -706,12 +735,12 @@ export function MessageThread({
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
       }
     },
-    [conversation, isSms, onNewMessage, onUpdateMessage],
+    [conversation, isWhatsApp, onNewMessage, onUpdateMessage],
   );
 
   const handleSendInteractive = useCallback(
     async (payload: InteractiveMessagePayload, replyToId?: string) => {
-      if (!conversation || isSms) return;
+      if (!conversation || !isWhatsApp) return;
 
       const tempId = `temp-${Date.now()}`;
       // Optimistic bubble — renders the buttons/list immediately via the
@@ -760,7 +789,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, isSms, onNewMessage, onUpdateMessage],
+    [conversation, isWhatsApp, onNewMessage, onUpdateMessage],
   );
 
   const handleStatusChange = useCallback(
@@ -779,9 +808,9 @@ export function MessageThread({
   );
 
   const handleOpenTemplates = useCallback(() => {
-    if (isSms) return;
+    if (!isWhatsApp) return;
     setTemplateModalOpen(true);
-  }, [isSms]);
+  }, [isWhatsApp]);
 
   const handleSendTemplate = useCallback(
     async (
@@ -792,7 +821,7 @@ export function MessageThread({
         buttonParams?: Record<number, string>;
       },
     ) => {
-      if (!conversation || isSms) return;
+      if (!conversation || !isWhatsApp) return;
 
       const renderedBody = renderTemplateBody(template.body_text, values.body);
       const tempId = `temp-${Date.now()}`;
@@ -851,7 +880,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, isSms, onNewMessage, onUpdateMessage],
+    [conversation, isWhatsApp, onNewMessage, onUpdateMessage],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -1025,7 +1054,7 @@ export function MessageThread({
   }
 
   const displayName = contact.name || contact.phone;
-  const ChannelIcon = CHANNEL_ICONS[channel];
+  const OutgoingIcon = CHANNEL_ICONS[outgoing];
   const currentStatus = STATUS_OPTIONS.find(
     (s) => s.value === conversation.status
   );
@@ -1068,24 +1097,62 @@ export function MessageThread({
             <h2 className="truncate text-sm font-semibold text-foreground">{displayName}</h2>
             <p className="truncate text-xs text-muted-foreground">{contact.phone}</p>
           </div>
-          {/* Chip de canal — el hilo mezcla WhatsApp, SMS y email del
-              mismo contacto, así que el agente necesita ver por dónde va
-              a salir lo que escriba ANTES de escribirlo. Se pinta también
-              en móvil (a diferencia del timer): saber el canal importa
+          {/* Chip de canal → SELECTOR de canal de salida. El hilo mezcla
+              WhatsApp, SMS y email del mismo contacto; lo que importa no
+              es por dónde llegó lo último sino por dónde va a SALIR lo
+              que el agente escriba, y eso aquí se elige. Las opciones sin
+              dato del contacto (sin teléfono / sin email) quedan
+              deshabilitadas con el motivo en el tooltip. Se pinta también
+              en móvil (a diferencia del timer): elegir el canal importa
               más que el hueco que ocupa. */}
-          <Badge
-            variant="outline"
-            aria-label={tChannel("ariaLabel", { channel: tChannel(channel) })}
-            className="ml-1 inline-flex flex-shrink-0 gap-1 border-border text-[10px] text-muted-foreground sm:ml-2"
-          >
-            <ChannelIcon className="h-3 w-3" />
-            {tChannel(channel)}
-          </Badge>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              title={tChannel("selectorTitle")}
+              aria-label={tChannel("ariaLabel", { channel: tChannel(outgoing) })}
+              className="ml-1 inline-flex flex-shrink-0 items-center gap-1 rounded-md border border-input bg-transparent px-2 py-1 text-[10px] text-muted-foreground sm:ml-2 hover:bg-muted hover:text-foreground"
+            >
+              <OutgoingIcon className="h-3 w-3" />
+              {tChannel(outgoing)}
+              <ChevronDown className="h-3 w-3" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="border-border bg-popover">
+              {(["whatsapp", "sms", "email"] as ThreadChannel[]).map((c) => {
+                const Icon = CHANNEL_ICONS[c];
+                const missingPhone = c === "sms" && !contact.phone;
+                const missingEmail = c === "email" && !contact.email;
+                return (
+                  <DropdownMenuItem
+                    key={c}
+                    disabled={missingPhone || missingEmail}
+                    title={
+                      missingPhone
+                        ? tChannel("missingPhone")
+                        : missingEmail
+                          ? tChannel("missingEmail")
+                          : undefined
+                    }
+                    onClick={() => {
+                      // Volver al canal derivado del último mensaje es un
+                      // valor más: elegir el que ya toca limpia la pisada
+                      // de override (selection a null → cae al derivado).
+                      setOutgoingSelection(
+                        c === channel ? null : { convId: conversation.id, channel: c },
+                      );
+                    }}
+                  >
+                    <Icon className="mr-2 h-3 w-3 text-muted-foreground" />
+                    {tChannel(c)}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Session timer badge — hidden on the narrowest phones so
-              the name + back arrow keep their room. Solo en WhatsApp: la
-              ventana de 24h es de Meta y en SMS/email no significa nada. */}
-          {!isSms && (
+              the name + back arrow keep their room. Solo cuando la salida
+              es WhatsApp: la ventana de 24h es de Meta y en SMS/email no
+              significa nada. */}
+          {isWhatsApp && (
             <Badge
               variant="outline"
               className={cn(
@@ -1334,11 +1401,12 @@ export function MessageThread({
         }}
       />
 
-      {/* Composer — `channel` decide qué afordancias ofrece: fuera de
-          WhatsApp no hay plantillas de Meta, ni interactivos, ni adjuntos. */}
+      {/* Composer — `channel` (el canal ELEGIDO) decide qué afordancias
+          ofrece: fuera de WhatsApp no hay plantillas de Meta, ni
+          interactivos, ni adjuntos. */}
       <MessageComposer
         conversationId={conversation.id}
-        channel={channel}
+        channel={outgoing}
         sessionExpired={sessionInfo.expired}
         onSend={handleSend}
         onSendMedia={handleSendMedia}

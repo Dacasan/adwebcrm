@@ -51,9 +51,14 @@ function htmlToText(html: string): string {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    // límites de bloque → salto de línea real, ANTES de pelar tags: sin
+    // esto el texto queda aplastado ("[https://...] pegado al texto")
+    .replace(/<(br|\/p|\/div|\/tr|\/li|\/h[1-6])[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
+    // colapsa espacios horizontal, respeta los \n insertados
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 

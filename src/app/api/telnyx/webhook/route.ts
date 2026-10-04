@@ -6,7 +6,7 @@ import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { buildMediaPath } from '@/lib/storage/upload-media'
 import { createTelnyxClient, loadTelnyxInboundConfig } from '@/lib/telnyx/api'
 import { ingestInboundSms } from '@/lib/inbound/sms-ingest'
-import { findContactByPhone } from '@/lib/inbound/resolve'
+import { findContactByPhone, findOrCreateContactByPhone } from '@/lib/inbound/resolve'
 
 // ============================================================
 // Telnyx webhook. Sin auth (firma Ed25519 ANTES de DB).
@@ -462,11 +462,19 @@ function isMissedInbound(p: Payload): boolean {
 
 async function dispatchMissed(admin: Admin, accountId: string, callId: string, p: Payload) {
   const caller = numStr(p.from)
-  const found = await findContactByPhone(admin, accountId, caller)
+
+  // Crear contacto si no existe (mismo patrón que SMS inbound).
+  // Sin esto, una llamada perdida de un número nuevo no genera contacto
+  // y el usuario no puede mandarle mensajes.
+  const ownerUserId = await getOwnerUserId(admin, accountId)
+  const contactId = caller && ownerUserId
+    ? await findOrCreateContactByPhone(admin, accountId, caller, ownerUserId)
+    : null
+
   await runAutomationsForTrigger({
     accountId,
     triggerType: 'missed_call',
-    contactId: found?.id ?? null,
+    contactId,
     context: {
       call_id: p.call_session_id ?? callId,
       call_direction: 'inbound',
@@ -474,6 +482,15 @@ async function dispatchMissed(admin: Admin, accountId: string, callId: string, p
       missed_call_number: caller || undefined,
     },
   }).catch((err) => console.error('[automations] missed_call dispatch failed:', err))
+}
+
+async function getOwnerUserId(admin: Admin, accountId: string): Promise<string | null> {
+  const { data } = await admin
+    .from('accounts')
+    .select('owner_user_id')
+    .eq('id', accountId)
+    .maybeSingle()
+  return (data?.owner_user_id as string | undefined) ?? null
 }
 
 

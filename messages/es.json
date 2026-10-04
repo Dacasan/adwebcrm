@@ -163,7 +163,10 @@
       "whatsapp": "WhatsApp",
       "sms": "SMS",
       "email": "Email",
-      "ariaLabel": "Canal: {channel}"
+      "ariaLabel": "Canal: {channel}",
+      "selectorTitle": "Elegir canal de respuesta",
+      "missingPhone": "Este contacto no tiene número de teléfono",
+      "missingEmail": "Este contacto no tiene correo electrónico"
     },
     "conversationList": {
       "searchPlaceholder": "Buscar conversaciones...",
@@ -249,7 +252,9 @@
       "smsCounterTitle": "Quedan {remaining} de {size} caracteres en este segmento",
       "smsUnicode": "Unicode",
       "smsUnicodeTitle": "Texto Unicode (emojis o acentos): cada segmento admite solo {size} caracteres en vez de 160",
-      "smsHint": "SMS: solo texto, sin plantillas ni adjuntos."
+      "smsHint": "SMS: solo texto, sin plantillas ni adjuntos.",
+      "emailPlaceholder": "Responder por correo…",
+      "emailHint": "Email: sale con el remitente Resend configurado."
     },
     "bubble": {
       "photo": "Foto",

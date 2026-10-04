@@ -297,6 +297,18 @@ export interface Message {
    * badge in the inbox. Migration 033.
    */
   ai_generated?: boolean;
+  /**
+   * Canal de la fila, tal y como lo escribe la ingesta (CHECK en
+   * migración 078: 'whatsapp' | 'sms' | 'email'). Opcional: las filas
+   * anteriores a la 078 no lo tienen (sin backfill).
+   */
+  channel?: "whatsapp" | "sms" | "email";
+  /**
+   * Payload extra por canal. El email entrante guarda el cuerpo HTML
+   * COMPLETO en metadata.html (más subject y adjuntos, sin binario) —
+   * migración 078. Solo se tipa lo que el hilo renderiza.
+   */
+  metadata?: { html?: string; subject?: string; attachments?: unknown[]; [key: string]: unknown };
 }
 
 export type ReactionActor = 'customer' | 'agent';

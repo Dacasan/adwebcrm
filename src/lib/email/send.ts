@@ -25,6 +25,13 @@ export interface SendEmailInput {
   to: string
   subject: string
   html: string
+  /**
+   * Headers extra del mensaje (p. ej. `In-Reply-To` / `References` para
+   * enhebrar la respuesta en el cliente de correo del destinatario).
+   * API verificada en Resend (docs/api-reference/emails/send-email):
+   * `headers` es un objeto de headers custom en el payload de `send`.
+   */
+  headers?: Record<string, string>
 }
 
 /**
@@ -41,6 +48,7 @@ export function createResendClient(apiKey: string) {
         subject: input.subject,
         html: input.html,
         ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
       })
       if (error) throw new EmailError(`Resend error: ${error.message}`)
       return { id: data?.id ?? "" }

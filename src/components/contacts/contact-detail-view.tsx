@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
 import { useAuth } from '@/hooks/use-auth';
@@ -40,6 +41,7 @@ import {
   X,
   DollarSign,
   LayoutTemplate,
+  Smartphone,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
@@ -57,6 +59,7 @@ export function ContactDetailView({
   onUpdated,
 }: ContactDetailViewProps) {
   const t = useTranslations('Contacts.detailView');
+  const router = useRouter();
   const supabase = createClient();
   const { accountId, defaultCurrency } = useAuth();
 
@@ -73,6 +76,10 @@ export function ContactDetailView({
   // Send email — lets the business email this contact using an email
   // template. Sent via /api/email/send, which persists to email_sends.
   const [emailPickerOpen, setEmailPickerOpen] = useState(false);
+
+  // Send SMS — navigates to the inbox with this contact's conversation open.
+  // The conversation is found-or-created, same as the SMS send route.
+  const [openingSms, setOpeningSms] = useState(false);
 
   // Details tab
   const [editName, setEditName] = useState('');
@@ -371,6 +378,58 @@ export function ContactDetailView({
     }
   }
 
+  async function handleOpenSms() {
+    if (!contactId || !accountId) return;
+    setOpeningSms(true);
+    try {
+      // Find-or-create conversation for this contact (same logic as /api/sms/send).
+      const { data: existing } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('contact_id', contactId)
+        .eq('account_id', accountId)
+        .maybeSingle();
+
+      if (existing?.id) {
+        router.push(`/inbox?c=${existing.id}`);
+        return;
+      }
+
+      // Get owner user_id for the NOT NULL constraint.
+      const { data: account } = await supabase
+        .from('accounts')
+        .select('owner_user_id')
+        .eq('id', accountId)
+        .maybeSingle();
+      const userId = account?.owner_user_id;
+      if (!userId) {
+        toast.error(t('toastUpdateFailed'));
+        return;
+      }
+
+      const { data: created } = await supabase
+        .from('conversations')
+        .insert({
+          contact_id: contactId,
+          account_id: accountId,
+          user_id: userId,
+          status: 'open',
+        })
+        .select('id')
+        .single();
+
+      if (created?.id) {
+        router.push(`/inbox?c=${created.id}`);
+      } else {
+        toast.error(t('toastUpdateFailed'));
+      }
+    } catch {
+      toast.error(t('toastUpdateFailed'));
+    } finally {
+      setOpeningSms(false);
+    }
+  }
+
   function getInitials(name?: string | null) {
     if (!name) return '?';
     return name
@@ -460,6 +519,22 @@ export function ContactDetailView({
                   >
                     <Mail className="size-4" />
                     {t('sendEmailBtn')}
+                  </Button>
+                )}
+                {contact.phone && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleOpenSms}
+                    disabled={openingSms}
+                    className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    {openingSms ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Smartphone className="size-4" />
+                    )}
+                    {t('sendSmsBtn')}
                   </Button>
                 )}
               </div>
