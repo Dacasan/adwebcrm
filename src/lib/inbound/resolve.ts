@@ -37,11 +37,25 @@ export async function findOrCreateConversation(
 ): Promise<{ id: string }> {
   const { data: existing } = await admin
     .from('conversations')
-    .select('id')
+    .select('id, deleted_at')
     .eq('contact_id', contactId)
     .eq('account_id', accountId)
     .maybeSingle()
-  if (existing) return existing
+  if (existing) {
+    // New activity revives a trashed thread. The send paths use the
+    // caller's RLS client, so without this the message would be stored in
+    // a conversation every list hides (migration 082).
+    if (existing.deleted_at) {
+      const { error } = await admin
+        .from('conversations')
+        .update({ deleted_at: null, deleted_by: null })
+        .eq('id', existing.id)
+      if (error) {
+        console.error('[resolve] failed to restore trashed conversation:', error)
+      }
+    }
+    return { id: existing.id }
+  }
   const { data: created } = await admin
     .from('conversations')
     .insert({

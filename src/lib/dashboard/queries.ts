@@ -47,16 +47,18 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
     messagesToday,
     messagesYesterday,
   ] = await Promise.all([
-    db.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'open'),
+    db.from('conversations').select('id', { count: 'exact', head: true }).eq('status', 'open').is('deleted_at', null),
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'open')
+      .is('deleted_at', null)
       .gte('created_at', todayStart),
     db
       .from('conversations')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'open')
+      .is('deleted_at', null)
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
     db.from('contacts').select('id', { count: 'exact', head: true }).gte('created_at', todayStart),
@@ -68,13 +70,17 @@ export async function loadMetrics(db: DB): Promise<MetricsBundle> {
     db.from('deals').select('value, status').eq('status', 'open'),
     db
       .from('messages')
-      .select('id', { count: 'exact', head: true })
+      // `conversations!inner` = INNER JOIN: messages of a trashed thread
+      // don't count in the dashboard (migration 082).
+      .select('id, conversations!inner(deleted_at)', { count: 'exact', head: true })
       .eq('sender_type', 'agent')
+      .is('conversations.deleted_at', null)
       .gte('created_at', todayStart),
     db
       .from('messages')
-      .select('id', { count: 'exact', head: true })
+      .select('id, conversations!inner(deleted_at)', { count: 'exact', head: true })
       .eq('sender_type', 'agent')
+      .is('conversations.deleted_at', null)
       .gte('created_at', yesterdayStart)
       .lt('created_at', todayStart),
   ])
@@ -112,7 +118,8 @@ export async function loadConversationsSeries(
   const start = daysAgoStart(rangeDays - 1).toISOString()
   const { data, error } = await db
     .from('messages')
-    .select('created_at, sender_type')
+    .select('created_at, sender_type, conversations!inner(deleted_at)')
+    .is('conversations.deleted_at', null)
     .gte('created_at', start)
     .order('created_at', { ascending: true })
   if (error) throw error
@@ -182,7 +189,8 @@ export async function loadResponseTime(db: DB): Promise<ResponseTimeSummary> {
   const fourteenDaysAgo = daysAgoStart(13).toISOString()
   const { data, error } = await db
     .from('messages')
-    .select('conversation_id, sender_type, created_at')
+    .select('conversation_id, sender_type, created_at, conversations!inner(deleted_at)')
+    .is('conversations.deleted_at', null)
     .gte('created_at', fourteenDaysAgo)
     .order('conversation_id', { ascending: true })
     .order('created_at', { ascending: true })
@@ -278,7 +286,8 @@ export async function loadActivity(db: DB, limit = 20): Promise<ActivityItem[]> 
   const [msgs, contacts, deals, broadcasts, autoLogs, stateChanges] = await Promise.all([
     db
       .from('messages')
-      .select('id, content_text, sender_type, created_at, conversation_id, conversations(contact_id, contacts(name, phone))')
+      .select('id, content_text, sender_type, created_at, conversation_id, conversations!inner(deleted_at, contact_id, contacts(name, phone))')
+      .is('conversations.deleted_at', null)
       .eq('sender_type', 'customer')
       .order('created_at', { ascending: false })
       .limit(10),
@@ -619,9 +628,10 @@ export async function loadChannelActivity(
     // saliente (no tiene `direction`), así que contarlos aquí era imposible.
     db
       .from('messages')
-      .select('id', { count: 'exact', head: true })
+      .select('id, conversations!inner(deleted_at)', { count: 'exact', head: true })
       .eq('channel', 'email')
       .eq('sender_type', 'customer')
+      .is('conversations.deleted_at', null)
       .gte('created_at', since),
     // Los envíos de CAMPAÑA no tocan email_sends (053:35) — van a
     // email_campaign_recipients. Sin ellos "sent" subcontaba.

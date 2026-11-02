@@ -106,7 +106,7 @@ export default function PipelinesPage() {
         .from("deals")
         .select(
           "*, contact:contacts(*), assignee:profiles!deals_assigned_to_fkey(*), " +
-            "conversation:conversations!deals_conversation_id_fkey(last_message_at, last_message_text)",
+            "conversation:conversations!deals_conversation_id_fkey(last_message_at, last_message_text, deleted_at)",
         )
         .eq("pipeline_id", pipelineId)
         .order("created_at", { ascending: false });

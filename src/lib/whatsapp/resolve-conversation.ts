@@ -166,7 +166,7 @@ async function findOrCreateConversationRow(
 ): Promise<string> {
   const { data: existing, error: findErr } = await db
     .from('conversations')
-    .select('id')
+    .select('id, deleted_at')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
     .order('created_at', { ascending: true })
@@ -178,7 +178,7 @@ async function findOrCreateConversationRow(
   }
 
   if (existing && existing.length > 0) {
-    return existing[0].id;
+    return restoreIfTrashed(db, existing[0] as TrashedConversationRow);
   }
 
   const { data: newConv, error: convErr } = await db
@@ -195,13 +195,13 @@ async function findOrCreateConversationRow(
     if (isUniqueViolation(convErr)) {
       const { data: raced } = await db
         .from('conversations')
-        .select('id')
+        .select('id, deleted_at')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
         .order('created_at', { ascending: true })
         .limit(1);
       if (raced && raced.length > 0) {
-        return raced[0].id;
+        return restoreIfTrashed(db, raced[0] as TrashedConversationRow);
       }
     }
     console.error('[resolve-conversation] conversation create error:', convErr);
@@ -209,4 +209,26 @@ async function findOrCreateConversationRow(
   }
 
   return newConv.id;
+}
+
+type TrashedConversationRow = { id: string; deleted_at?: string | null };
+
+/**
+ * A send to a trashed thread is new activity: clear the flag so the
+ * message isn't stored in a conversation every list hides (migration
+ * 082). Best-effort — a restore failure must not lose the send.
+ */
+async function restoreIfTrashed(
+  db: SupabaseClient,
+  row: TrashedConversationRow
+): Promise<string> {
+  if (!row.deleted_at) return row.id;
+  const { error } = await db
+    .from('conversations')
+    .update({ deleted_at: null, deleted_by: null })
+    .eq('id', row.id);
+  if (error) {
+    console.error('[resolve-conversation] restore trashed thread failed:', error);
+  }
+  return row.id;
 }

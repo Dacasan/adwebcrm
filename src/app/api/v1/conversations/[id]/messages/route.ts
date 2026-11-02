@@ -31,6 +31,7 @@ export async function GET(
       .select('id')
       .eq('id', id)
       .eq('account_id', ctx.accountId)
+      .is('deleted_at', null)
       .maybeSingle();
     if (!conv) return fail('not_found', 'Conversation not found', 404);
 

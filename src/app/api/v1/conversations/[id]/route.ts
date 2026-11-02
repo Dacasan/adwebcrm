@@ -25,6 +25,7 @@ export async function GET(
       .select(CONVERSATION_SELECT)
       .eq('id', id)
       .eq('account_id', ctx.accountId)
+      .is('deleted_at', null)
       .maybeSingle();
 
     if (error) {

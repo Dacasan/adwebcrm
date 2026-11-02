@@ -385,12 +385,25 @@ export function ContactDetailView({
       // Find-or-create conversation for this contact (same logic as /api/sms/send).
       const { data: existing } = await supabase
         .from('conversations')
-        .select('id')
+        .select('id, deleted_at')
         .eq('contact_id', contactId)
         .eq('account_id', accountId)
         .maybeSingle();
 
       if (existing?.id) {
+        // The thread may be in the trash. Opening it is new activity, so
+        // restore it instead of navigating to a hidden conversation (the
+        // unique index prevents creating a second one for the contact).
+        if (existing.deleted_at) {
+          const { error: restoreErr } = await supabase
+            .from('conversations')
+            .update({ deleted_at: null, deleted_by: null })
+            .eq('id', existing.id);
+          if (restoreErr) {
+            toast.error(t('toastUpdateFailed'));
+            return;
+          }
+        }
         router.push(`/inbox?c=${existing.id}`);
         return;
       }

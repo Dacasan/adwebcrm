@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { findOrCreateConversation } from '@/lib/inbound/resolve'
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -97,7 +97,7 @@ export async function POST(request: Request) {
     if (conversationIdInput) {
       const { data, error: convError } = await supabase
         .from('conversations')
-        .select('id')
+        .select('id, deleted_at')
         .eq('id', conversationIdInput)
         .eq('account_id', accountId)
         .single()
@@ -107,6 +107,22 @@ export async function POST(request: Request) {
           { error: 'Conversation not found' },
           { status: 404 }
         )
+      }
+      // A stale link (deal, notification, today queue) can point at a
+      // trashed thread. Sending is new activity: restore it first so the
+      // message lands somewhere visible (migration 082).
+      if (data.deleted_at) {
+        const { error: restoreErr } = await supabase
+          .from('conversations')
+          .update({ deleted_at: null, deleted_by: null })
+          .eq('id', data.id)
+        if (restoreErr) {
+          console.error('Failed to restore trashed conversation:', restoreErr)
+          return NextResponse.json(
+            { error: 'Failed to restore conversation' },
+            { status: 500 }
+          )
+        }
       }
       conversationId = data.id
     } else {
@@ -129,16 +145,16 @@ export async function POST(request: Request) {
       const resolved = await findOrCreateConversation(
         supabase,
         accountId,
-        userId,
-        contact_id
+        contact_id,
+        userId
       )
-      if (!resolved) {
+      if (!resolved.id) {
         return NextResponse.json(
           { error: 'Failed to open a conversation for this contact' },
           { status: 500 }
         )
       }
-      conversationId = resolved
+      conversationId = resolved.id
     }
 
     if (!conversationId) {
@@ -187,46 +203,4 @@ export async function POST(request: Request) {
     console.error('Error in WhatsApp send POST:', error)
     return toErrorResponse(error)
   }
-}
-
-type SendSupabase = Awaited<ReturnType<typeof createClient>>
-
-/**
- * Return the contact's conversation id in this account, creating one if
- * it doesn't exist yet. Mirrors the webhook's find-or-create so an
- * inbound-then-outbound (or outbound-first) sequence converges on a single
- * thread per contact. Runs under the caller's RLS — the conversations_insert
- * policy requires account agent membership, which the caller already is.
- */
-async function findOrCreateConversation(
-  supabase: SendSupabase,
-  accountId: string,
-  userId: string,
-  contactId: string,
-): Promise<string | null> {
-  const { data: existing } = await supabase
-    .from('conversations')
-    .select('id')
-    .eq('account_id', accountId)
-    .eq('contact_id', contactId)
-    .maybeSingle()
-
-  if (existing) return existing.id
-
-  const { data: created, error } = await supabase
-    .from('conversations')
-    .insert({
-      account_id: accountId,
-      user_id: userId,
-      contact_id: contactId,
-    })
-    .select('id')
-    .single()
-
-  if (error) {
-    console.error('Error creating conversation for contact send:', error.message)
-    return null
-  }
-
-  return created.id
 }

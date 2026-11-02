@@ -73,12 +73,28 @@ export async function POST(req: NextRequest) {
     if (typeof body.conversationId === 'string' && body.conversationId) {
       const { data: conv } = await ctx.supabase
         .from('conversations')
-        .select('id, contact_id')
+        .select('id, contact_id, deleted_at')
         .eq('id', body.conversationId)
         .eq('account_id', ctx.accountId)
         .maybeSingle()
       if (!conv) {
         return NextResponse.json({ error: 'conversation not found' }, { status: 404 })
+      }
+      // A stale link can point at a trashed thread. Sending is new
+      // activity: restore it before the provider call so the SMS lands
+      // somewhere visible (migration 082).
+      if (conv.deleted_at) {
+        const { error: restoreErr } = await ctx.supabase
+          .from('conversations')
+          .update({ deleted_at: null, deleted_by: null })
+          .eq('id', conv.id)
+        if (restoreErr) {
+          console.error('[sms] failed to restore trashed conversation:', restoreErr)
+          return NextResponse.json(
+            { error: 'Failed to restore conversation' },
+            { status: 500 },
+          )
+        }
       }
       conversationId = conv.id as string
       contactId = (conv.contact_id as string | null) ?? null

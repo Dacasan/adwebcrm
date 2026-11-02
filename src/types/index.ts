@@ -207,6 +207,10 @@ export interface Conversation {
   unread_count: number;
   created_at: string;
   updated_at: string;
+  /** Set when the thread is in the inbox trash (migration 082). */
+  deleted_at?: string | null;
+  /** Admin/agent that moved it to the trash, for audit. */
+  deleted_by?: string | null;
   contact?: Contact;
   /**
    * AI auto-reply state for this thread (migration 029 + 033):
@@ -485,6 +489,8 @@ export interface Deal {
   conversation?: {
     last_message_at?: string | null;
     last_message_text?: string | null;
+    /** Set when the linked thread is in the inbox trash (migration 082). */
+    deleted_at?: string | null;
   };
 }
 

@@ -282,6 +282,20 @@ function InboxPageInner() {
       new: Conversation;
       old: Partial<Conversation>;
     }) => {
+      // Permanent delete from the trash. Realtime sends only the old
+      // primary key by default; that's all we need.
+      if (event.eventType === "DELETE") {
+        const id = event.old?.id;
+        if (!id) return;
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+        if (activeConversation?.id === id) {
+          setActiveConversation(null);
+          setActiveContact(null);
+          setMessages([]);
+        }
+        return;
+      }
+
       const conv = event.new;
 
       if (event.eventType === "INSERT") {
@@ -331,6 +345,13 @@ function InboxPageInner() {
           setActiveConversation((prev) =>
             prev ? { ...prev, ...conv } : prev
           );
+          // Another teammate trashed the thread we are reading. Close
+          // it instead of leaving a hidden conversation on screen.
+          if (conv.deleted_at) {
+            setActiveConversation(null);
+            setActiveContact(null);
+            setMessages([]);
+          }
         }
       }
     },
@@ -424,7 +445,7 @@ function InboxPageInner() {
         // refetch. The thread would read "No messages yet" until a
         // full page reload rehydrated state from scratch.
         if (activeConversation?.id === deepLinkConvId) return;
-        const match = loaded.find((c) => c.id === deepLinkConvId);
+        const match = loaded.find((c) => c.id === deepLinkConvId && !c.deleted_at);
         if (match) {
           setActiveConversation(match);
           setActiveContact(match.contact ?? null);
@@ -500,6 +521,37 @@ function InboxPageInner() {
     autoSelectedForDeepLinkRef.current = null;
     router.replace("/inbox", { scroll: false });
   }, [router]);
+
+  /**
+   * Reflect a soft delete / restore in the parent list. The row stays
+   * in `conversations` (the trash reads the same array); the list
+   * filters by `deleted_at`.
+   */
+  const handleConversationDeleted = useCallback(
+    (id: string, deleted: boolean) => {
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? { ...c, deleted_at: deleted ? new Date().toISOString() : null }
+            : c,
+        ),
+      );
+      if (deleted && activeConversation?.id === id) {
+        handleCloseConversation();
+      }
+    },
+    [activeConversation?.id, handleCloseConversation],
+  );
+
+  const handleConversationPurged = useCallback(
+    (id: string) => {
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversation?.id === id) {
+        handleCloseConversation();
+      }
+    },
+    [activeConversation?.id, handleCloseConversation],
+  );
 
 
   const handleMessagesLoaded = useCallback((loaded: Message[]) => {
@@ -589,6 +641,8 @@ function InboxPageInner() {
             onSelect={handleSelectConversation}
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
+            onConversationDeleted={handleConversationDeleted}
+            onConversationPurged={handleConversationPurged}
             resyncToken={resyncToken}
           />
         </div>

@@ -198,6 +198,7 @@ export function DealForm({
         .from("conversations")
         .select("*")
         .eq("contact_id", contactId)
+        .is("deleted_at", null)
         .order("last_message_at", { ascending: false })
         .limit(1)
         .maybeSingle();

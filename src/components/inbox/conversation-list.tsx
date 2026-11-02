@@ -9,10 +9,23 @@ import {
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Smartphone, Mail } from "lucide-react";
+import {
+  Search,
+  ChevronDown,
+  X,
+  Smartphone,
+  Mail,
+  Trash2,
+  RotateCcw,
+  Loader2,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
+import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/use-auth";
+import { TrashPurgeDialog } from "./trash-purge-dialog";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -27,6 +40,10 @@ interface ConversationListProps {
   onSelect: (conversation: Conversation) => void;
   conversations: Conversation[];
   onConversationsLoaded: (conversations: Conversation[]) => void;
+  /** Applies a soft delete / restore to the parent's conversation list. */
+  onConversationDeleted: (id: string, deleted: boolean) => void;
+  /** Removes a permanently deleted conversation from the parent state. */
+  onConversationPurged: (id: string) => void;
   /**
    * Increment to force the fetch effect below to refire. The parent
    * bumps this on realtime reconnect / tab visibility → visible so the
@@ -79,16 +96,21 @@ type ChannelRow = {
   created_at: string;
 };
 
-type InboxFilter = ConversationStatus | "all" | "unread";
+type InboxFilter = ConversationStatus | "all" | "unread" | "trash";
 
 export function ConversationList({
   activeConversationId,
   onSelect,
   conversations,
   onConversationsLoaded,
+  onConversationDeleted,
+  onConversationPurged,
   resyncToken = 0,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
+  // Trash mutations are agent+ at the RLS/API layer; a viewer sees the
+  // list but not the actions.
+  const { canSendMessages } = useAuth();
 
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(() => [
     { label: t("filterAll"), value: "all" },
@@ -96,6 +118,7 @@ export function ConversationList({
     { label: t("filterOpen"), value: "open" },
     { label: t("filterPending"), value: "pending" },
     { label: t("filterClosed"), value: "closed" },
+    { label: t("filterTrash"), value: "trash" },
   ], [t]);
 
   const [search, setSearch] = useState("");
@@ -107,6 +130,8 @@ export function ConversationList({
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<Conversation | null>(null);
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -242,16 +267,24 @@ export function ConversationList({
   }, [tags]);
 
   const filtered = useMemo(() => {
-    let result = conversations;
+    const isTrash = filter === "trash";
+    // Trashed threads never appear in the inbox filters; the trash
+    // filter is the only place they surface (migration 082).
+    let result = conversations.filter((c) =>
+      isTrash ? !!c.deleted_at : !c.deleted_at,
+    );
 
-    if (filter === "unread") {
-      result = result.filter((c) => c.unread_count > 0);
-    } else if (filter !== "all") {
-      result = result.filter((c) => c.status === filter);
+    if (!isTrash) {
+      if (filter === "unread") {
+        result = result.filter((c) => c.unread_count > 0);
+      } else if (filter !== "all") {
+        result = result.filter((c) => c.status === filter);
+      }
     }
 
     // Contact-based filters (tags via OR logic, exact company match).
-    if (selectedTagIds.length > 0 || selectedCompany !== null) {
+    // Trash is a flat recovery list, so these don't apply there.
+    if (!isTrash && (selectedTagIds.length > 0 || selectedCompany !== null)) {
       result = result.filter((c) =>
         matchesContactFilters(c, {
           tagIds: selectedTagIds,
@@ -298,6 +331,28 @@ export function ConversationList({
       onSelect(conv);
     },
     [onSelect]
+  );
+
+  const setDeleted = useCallback(
+    async (id: string, deleted: boolean) => {
+      setBusyId(id);
+      try {
+        const res = await fetch(`/api/inbox/conversations/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deleted }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        onConversationDeleted(id, deleted);
+        toast.success(deleted ? t("movedToTrash") : t("restored"));
+      } catch (err) {
+        console.error("Failed to update conversation trash state:", err);
+        toast.error(t("actionFailed"));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [onConversationDeleted, t]
   );
 
   const activeFilter = FILTER_OPTIONS.find((o) => o.value === filter);
@@ -486,23 +541,53 @@ export function ConversationList({
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-4 py-12 text-center">
-            <p className="text-sm text-muted-foreground">{t("noConversations")}</p>
+            <p className="text-sm text-muted-foreground">
+              {filter === "trash" ? t("trashEmpty") : t("noConversations")}
+            </p>
           </div>
         ) : (
           <div className="flex flex-col">
-            {filtered.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                channel={channelByConversation[conv.id]}
-                isActive={conv.id === activeConversationId}
-                onSelect={handleSelect}
-                t={t}
-              />
-            ))}
+            {filtered.map((conv) =>
+              filter === "trash" ? (
+                <TrashItem
+                  key={conv.id}
+                  conversation={conv}
+                  busy={busyId === conv.id}
+                  canModify={canSendMessages}
+                  onRestore={() => setDeleted(conv.id, false)}
+                  onPurge={() => setPurgeTarget(conv)}
+                  t={t}
+                />
+              ) : (
+                <ConversationItem
+                  key={conv.id}
+                  conversation={conv}
+                  channel={channelByConversation[conv.id]}
+                  isActive={conv.id === activeConversationId}
+                  onSelect={handleSelect}
+                  onTrash={() => setDeleted(conv.id, true)}
+                  canTrash={canSendMessages}
+                  busy={busyId === conv.id}
+                  t={t}
+                />
+              ),
+            )}
           </div>
         )}
       </ScrollArea>
+
+      <TrashPurgeDialog
+        key={purgeTarget?.id ?? "closed"}
+        conversation={purgeTarget}
+        onOpenChange={(open) => {
+          if (!open) setPurgeTarget(null);
+        }}
+        onPurged={(id) => {
+          setPurgeTarget(null);
+          onConversationPurged(id);
+          toast.success(t("purged"));
+        }}
+      />
     </div>
   );
 }
@@ -545,6 +630,11 @@ interface ConversationItemProps {
   channel?: MessageChannel;
   isActive: boolean;
   onSelect: (conversation: Conversation) => void;
+  /** Mueve el hilo a la papelera (soft delete, reversible). */
+  onTrash: () => void;
+  /** Viewer role: render the row without the trash action. */
+  canTrash: boolean;
+  busy: boolean;
   t: ReturnType<typeof useTranslations>;
 }
 
@@ -553,6 +643,9 @@ function ConversationItem({
   channel,
   isActive,
   onSelect,
+  onTrash,
+  canTrash,
+  busy,
   t,
 }: ConversationItemProps) {
   const contact = conversation.contact;
@@ -563,6 +656,14 @@ function ConversationItem({
     onSelect(conversation);
   }, [onSelect, conversation]);
 
+  const handleTrash = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.stopPropagation();
+      onTrash();
+    },
+    [onTrash],
+  );
+
   const timeAgo = conversation.last_message_at
     ? formatDistanceToNow(new Date(conversation.last_message_at), {
         addSuffix: false,
@@ -570,55 +671,140 @@ function ConversationItem({
     : "";
 
   return (
-    <button
-      onClick={handleClick}
-      className={cn(
-        "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
-        isActive && "border-l-2 border-primary bg-muted/70"
-      )}
-    >
-      {/* Avatar */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
-        {contact?.avatar_url ? (
-          <img
-            src={contact.avatar_url}
-            alt={displayName}
-            className="h-10 w-10 rounded-full object-cover"
-          />
-        ) : (
-          initials
+    <div className="group relative">
+      <button
+        onClick={handleClick}
+        className={cn(
+          "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
+          isActive && "border-l-2 border-primary bg-muted/70"
         )}
-      </div>
-
-      {/* Content */}
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-sm font-medium text-foreground">
-            {displayName}
-          </span>
-          <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
-        </div>
-        <div className="mt-0.5 flex items-center justify-between gap-2">
-          <p className="truncate text-xs text-muted-foreground">
-            {conversation.last_message_text || t("noMessagesYet")}
-          </p>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <ChannelChip channel={channel} t={t} />
-            {conversation.unread_count > 0 && (
-              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
-                {conversation.unread_count}
-              </span>
-            )}
-            <span
-              className={cn(
-                "h-2 w-2 rounded-full",
-                STATUS_COLORS[conversation.status]
-              )}
-              title={conversation.status}
+      >
+        {/* Avatar */}
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+          {contact?.avatar_url ? (
+            <img
+              src={contact.avatar_url}
+              alt={displayName}
+              className="h-10 w-10 rounded-full object-cover"
             />
+          ) : (
+            initials
+          )}
+        </div>
+
+        {/* Content */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2 pr-6">
+            <span className="truncate text-sm font-medium text-foreground">
+              {displayName}
+            </span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">{timeAgo}</span>
+          </div>
+          <div className="mt-0.5 flex items-center justify-between gap-2">
+            <p className="truncate text-xs text-muted-foreground">
+              {conversation.last_message_text || t("noMessagesYet")}
+            </p>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <ChannelChip channel={channel} t={t} />
+              {conversation.unread_count > 0 && (
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                  {conversation.unread_count}
+                </span>
+              )}
+              <span
+                className={cn(
+                  "h-2 w-2 rounded-full",
+                  STATUS_COLORS[conversation.status]
+                )}
+                title={conversation.status}
+              />
+            </div>
           </div>
         </div>
+      </button>
+
+      {/* Soft delete lives on the row instead of the thread header so
+          cleaning the inbox doesn't require opening each conversation. */}
+      {canTrash && (
+        <button
+          type="button"
+          onClick={handleTrash}
+          disabled={busy}
+          title={t("moveToTrash")}
+          aria-label={t("moveToTrash")}
+          className="absolute right-2 top-2 rounded-md p-1 text-muted-foreground opacity-100 transition-opacity hover:bg-muted hover:text-destructive focus-visible:opacity-100 disabled:opacity-50 lg:pointer-events-none lg:opacity-0 lg:group-hover:pointer-events-auto lg:group-hover:opacity-100"
+        >
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface TrashItemProps {
+  conversation: Conversation;
+  busy: boolean;
+  /** Viewer role: rows are visible but recovery actions are not. */
+  canModify: boolean;
+  onRestore: () => void;
+  onPurge: () => void;
+  t: ReturnType<typeof useTranslations>;
+}
+
+/** Row in the Papelera filter: no thread selection, only recovery actions. */
+function TrashItem({
+  conversation,
+  busy,
+  canModify,
+  onRestore,
+  onPurge,
+  t,
+}: TrashItemProps) {
+  const contact = conversation.contact;
+  const displayName =
+    contact?.name || contact?.email || contact?.phone || t("unknown");
+  const initials = displayName.charAt(0).toUpperCase();
+
+  return (
+    <div className="flex items-start gap-3 border-b border-border/50 px-3 py-3">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
+        {initials}
       </div>
-    </button>
+
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium text-foreground">
+          {displayName}
+        </span>
+        <p className="truncate text-xs text-muted-foreground">
+          {conversation.last_message_text || t("noMessagesYet")}
+        </p>
+        {canModify && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={onRestore}
+              disabled={busy}
+            >
+              <RotateCcw className="h-3 w-3" />
+              {t("restore")}
+            </Button>
+            <Button
+              size="xs"
+              variant="destructive"
+              onClick={onPurge}
+              disabled={busy}
+            >
+              <Trash2 className="h-3 w-3" />
+              {t("deleteForever")}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

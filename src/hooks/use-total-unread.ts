@@ -28,7 +28,8 @@ export function useTotalUnread(): number {
     (async () => {
       const { data, error } = await supabase
         .from("conversations")
-        .select("id, unread_count");
+        .select("id, unread_count")
+        .is("deleted_at", null);
       if (cancelled || error || !data) return;
 
       const map = new Map<string, number>();
@@ -54,7 +55,10 @@ export function useTotalUnread(): number {
             if (oldRow.id) map.delete(oldRow.id);
           } else {
             const row = payload.new as Conversation;
-            map.set(row.id, row.unread_count ?? 0);
+            // Trashed threads stay out of the badge, matching the
+            // initial query's `deleted_at IS NULL` filter.
+            if (row.deleted_at) map.delete(row.id);
+            else map.set(row.id, row.unread_count ?? 0);
           }
           // Recompute — cheap, conversations per user stay small.
           let sum = 0;

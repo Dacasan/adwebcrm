@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Records of what the route wrote, so we can assert the right rows landed.
 const conversationInserts: Array<Record<string, unknown>> = []
+const conversationUpdates: Array<Record<string, unknown>> = []
 const messageInserts: Array<Record<string, unknown>> = []
 
 // Toggles for the per-test scenario.
@@ -91,9 +92,13 @@ function makeSupabaseMock() {
 
     const b: Record<string, unknown> = {}
     const chain = () => b
-    for (const m of ['select', 'eq', 'in', 'order', 'limit', 'update', 'delete']) {
+    for (const m of ['select', 'eq', 'in', 'order', 'limit', 'delete']) {
       b[m] = vi.fn(chain)
     }
+    b.update = vi.fn((payload: Record<string, unknown>) => {
+      if (table === 'conversations') conversationUpdates.push(payload)
+      return b
+    })
     b.insert = vi.fn((payload: Record<string, unknown>) => {
       didInsert = true
       if (table === 'conversations') {
@@ -180,9 +185,27 @@ function postContactTemplate(overrides: Record<string, unknown> = {}) {
   )
 }
 
+function postConversationTemplate() {
+  return POST(
+    new Request('http://localhost/api/whatsapp/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: 'conv-existing',
+        message_type: 'template',
+        template_name: 'order_update',
+        template_language: 'en_US',
+        template_message_params: { body: ['Acme', '#1234'] },
+        template_params: ['Acme', '#1234'],
+      }),
+    }),
+  )
+}
+
 describe('POST /api/whatsapp/send — contact_id template path', () => {
   beforeEach(() => {
     conversationInserts.length = 0
+    conversationUpdates.length = 0
     messageInserts.length = 0
     existingConversation = null
     createdConversation = null
@@ -246,6 +269,25 @@ describe('POST /api/whatsapp/send — contact_id template path', () => {
     expect(messageInserts[0]).toMatchObject({ conversation_id: 'conv-existing' })
   })
 
+  it('restores a trashed thread before sending to the contact', async () => {
+    existingConversation = {
+      id: 'conv-existing',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      contact: CONTACT,
+      deleted_at: '2026-11-02T00:00:00Z',
+    }
+
+    const res = await postContactTemplate()
+    expect(res.status).toBe(200)
+
+    expect(conversationUpdates).toContainEqual({
+      deleted_at: null,
+      deleted_by: null,
+    })
+    expect(messageInserts[0]).toMatchObject({ conversation_id: 'conv-existing' })
+  })
+
   it('404s when the contact is not in the caller account', async () => {
     contactRow = null
 
@@ -272,6 +314,7 @@ describe('POST /api/whatsapp/send — contact_id template path', () => {
 describe('POST /api/whatsapp/send — role enforcement', () => {
   beforeEach(() => {
     conversationInserts.length = 0
+    conversationUpdates.length = 0
     messageInserts.length = 0
     existingConversation = {
       id: 'conv-existing',
@@ -311,6 +354,36 @@ describe('POST /api/whatsapp/send — role enforcement', () => {
     const res = await postContactTemplate()
 
     expect(res.status).toBe(200)
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('POST /api/whatsapp/send — trashed conversation', () => {
+  beforeEach(() => {
+    conversationInserts.length = 0
+    conversationUpdates.length = 0
+    messageInserts.length = 0
+    createdConversation = null
+    contactRow = CONTACT
+    callerRole = 'admin'
+    existingConversation = {
+      id: 'conv-existing',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      contact: CONTACT,
+      deleted_at: '2026-11-02T00:00:00Z',
+    }
+    supabaseMock = makeSupabaseMock()
+    sendTemplateMessage.mockClear()
+  })
+
+  it('restores the thread before sending so the message is not hidden', async () => {
+    const res = await postConversationTemplate()
+    expect(res.status).toBe(200)
+    expect(conversationUpdates).toContainEqual({
+      deleted_at: null,
+      deleted_by: null,
+    })
     expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
   })
 })

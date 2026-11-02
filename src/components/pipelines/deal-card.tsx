@@ -48,13 +48,22 @@ export function DealCard({
 
   // Última interacción (DAD §7.4): conversations.last_message_at +
   // last_message_text — info para el SDR, nunca score numérico.
-  const lastTouch = deal.conversation?.last_message_at
-    ? formatRelative(deal.conversation.last_message_at)
-    : null;
-  const lastText = deal.conversation?.last_message_text;
+  // A trashed thread (migration 082) has no preview and its deep link
+  // would fall back to the inbox list.
+  const conversation = deal.conversation;
+  const lastTouch =
+    conversation && !conversation.deleted_at && conversation.last_message_at
+      ? formatRelative(conversation.last_message_at)
+      : null;
+  const lastText = conversation?.deleted_at
+    ? null
+    : conversation?.last_message_text;
   const email = deal.contact?.email;
   const phone = deal.contact?.phone;
-  const inboxHref = deal.conversation_id ? `/inbox?c=${deal.conversation_id}` : `/inbox`;
+  const inboxHref =
+    deal.conversation_id && !conversation?.deleted_at
+      ? `/inbox?c=${deal.conversation_id}`
+      : "/inbox";
 
   return (
     // La raíz es un <div>, no un <button>: la tarjeta contiene enlaces de
